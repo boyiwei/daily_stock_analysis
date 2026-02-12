@@ -211,6 +211,7 @@ daily_stock_analysis/
 | `STOCK_LIST` | 自选股代码（逗号分隔） | - |
 | `MAX_WORKERS` | 并发线程数 | `3` |
 | `MARKET_REVIEW_ENABLED` | 启用大盘复盘 | `true` |
+| `MARKET_REVIEW_TYPE` | 大盘复盘市场类型：A（A股）、US（美股）、HK（港股） | `A` |
 | `SCHEDULE_ENABLED` | 启用定时任务 | `false` |
 | `SCHEDULE_TIME` | 定时执行时间 | `18:00` |
 | `LOG_DIR` | 日志目录 | `./logs` |

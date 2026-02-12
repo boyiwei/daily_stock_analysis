@@ -5,6 +5,15 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [3.0.6] - 2026-02-12
+
+### 新增
+- 🌍 大盘复盘支持多市场类型：A股、美股、港股
+  - 新增 `MARKET_REVIEW_TYPE` 配置项（可选值：`A`、`US`、`HK`）
+  - 美股复盘分析标普500、道琼斯、纳斯达克等主要指数
+  - 港股复盘分析恒生指数、国企指数、恒生科技等指数
+  - 大模型 Prompt 根据市场类型自动调整分析重点
+
 ## [3.0.5] - 2026-02-08
 
 ### 修复

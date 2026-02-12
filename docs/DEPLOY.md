@@ -195,6 +195,7 @@ journalctl -u stock-analyzer -f
 | `SCHEDULE_ENABLED` | `false` | 是否启用定时任务 |
 | `SCHEDULE_TIME` | `18:00` | 每日执行时间 |
 | `MARKET_REVIEW_ENABLED` | `true` | 是否启用大盘复盘 |
+| `MARKET_REVIEW_TYPE` | `A` | 大盘复盘市场类型：A（A股）、US（美股）、HK（港股） |
 | `TAVILY_API_KEYS` | - | 新闻搜索（可选） |
 
 ---

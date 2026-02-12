@@ -195,6 +195,7 @@ journalctl -u stock-analyzer -f
 | `SCHEDULE_ENABLED` | `false` | Enable scheduled tasks |
 | `SCHEDULE_TIME` | `18:00` | Daily execution time |
 | `MARKET_REVIEW_ENABLED` | `true` | Enable market review |
+| `MARKET_REVIEW_TYPE` | `A` | Market review type: A (A-shares), US (US stocks), HK (Hong Kong) |
 | `TAVILY_API_KEYS` | - | News search (optional) |
 
 ---
