@@ -1302,10 +1302,17 @@ class AkshareFetcher(BaseFetcher):
         
         return result
 
-    def get_main_indices(self) -> Optional[List[Dict[str, Any]]]:
+    def get_main_indices(self, market_type: str = "A") -> Optional[List[Dict[str, Any]]]:
         """
         获取主要指数实时行情 (新浪接口)
+        
+        Args:
+            market_type: Market type - only "A" (A-shares) is supported by AkShare
         """
+        # AkShare only supports A-share indices
+        if market_type.upper() != "A":
+            return None
+        
         import akshare as ak
 
         # 主要指数代码映射
@@ -1366,14 +1373,21 @@ class AkshareFetcher(BaseFetcher):
             logger.error(f"[Akshare] 获取指数行情失败: {e}")
             return None
 
-    def get_market_stats(self) -> Optional[Dict[str, Any]]:
+    def get_market_stats(self, market_type: str = "A") -> Optional[Dict[str, Any]]:
         """
         获取市场涨跌统计
+
+        Args:
+            market_type: Market type - only "A" (A-shares) is supported
 
         数据源优先级：
         1. 东财接口 (ak.stock_zh_a_spot_em)
         2. 新浪接口 (ak.stock_zh_a_spot)
         """
+        # AkShare only supports A-share market stats
+        if market_type.upper() != "A":
+            return None
+        
         import akshare as ak
 
         # 优先东财接口
@@ -1439,14 +1453,22 @@ class AkshareFetcher(BaseFetcher):
             stats['total_amount'] = df[amount_col].sum() / 1e8
         return stats
 
-    def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
+    def get_sector_rankings(self, n: int = 5, market_type: str = "A") -> Optional[Tuple[List[Dict], List[Dict]]]:
         """
         获取板块涨跌榜
+
+        Args:
+            n: Number of top/bottom sectors to return
+            market_type: Market type - only "A" (A-shares) is supported
 
         数据源优先级：
         1. 东财接口 (ak.stock_board_industry_name_em)
         2. 新浪接口 (ak.stock_sector_spot)
         """
+        # AkShare only supports A-share sector rankings
+        if market_type.upper() != "A":
+            return None
+        
         import akshare as ak
 
         # 优先东财接口

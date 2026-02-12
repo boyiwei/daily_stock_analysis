@@ -226,21 +226,43 @@ class YfinanceFetcher(BaseFetcher):
         
         return df
 
-    def get_main_indices(self) -> Optional[List[Dict[str, Any]]]:
+    def get_main_indices(self, market_type: str = "A") -> Optional[List[Dict[str, Any]]]:
         """
         获取主要指数行情 (Yahoo Finance)
+        
+        Args:
+            market_type: Market type - "A" (A-shares), "US" (US stocks), "HK" (Hong Kong)
         """
         import yfinance as yf
 
-        # 映射关系：akshare代码 -> (yfinance代码, 名称)
-        yf_mapping = {
-            'sh000001': ('000001.SS', '上证指数'),
-            'sz399001': ('399001.SZ', '深证成指'),
-            'sz399006': ('399006.SZ', '创业板指'),
-            'sh000688': ('000688.SS', '科创50'),
-            'sh000016': ('000016.SS', '上证50'),
-            'sh000300': ('000300.SS', '沪深300'),
-        }
+        # Define index mappings for different markets
+        if market_type.upper() == "US":
+            # US market indices
+            yf_mapping = {
+                '^GSPC': ('^GSPC', 'S&P 500'),
+                '^DJI': ('^DJI', 'Dow Jones'),
+                '^IXIC': ('^IXIC', 'Nasdaq'),
+                '^RUT': ('^RUT', 'Russell 2000'),
+                '^VIX': ('^VIX', 'VIX'),
+                '^SOX': ('^SOX', 'Philadelphia Semiconductor'),
+            }
+        elif market_type.upper() == "HK":
+            # Hong Kong market indices
+            yf_mapping = {
+                '^HSI': ('^HSI', '恒生指数'),
+                '^HSCE': ('^HSCE', '国企指数'),
+                '^HSTECH': ('^HSTECH', '恒生科技'),
+            }
+        else:
+            # A-share market indices (default)
+            yf_mapping = {
+                'sh000001': ('000001.SS', '上证指数'),
+                'sz399001': ('399001.SZ', '深证成指'),
+                'sz399006': ('399006.SZ', '创业板指'),
+                'sh000688': ('000688.SS', '科创50'),
+                'sh000016': ('000016.SS', '上证50'),
+                'sh000300': ('000300.SS', '沪深300'),
+            }
 
         results = []
         try:
@@ -286,7 +308,7 @@ class YfinanceFetcher(BaseFetcher):
                     continue
 
             if results:
-                logger.info(f"[Yfinance] 成功获取 {len(results)} 个指数行情")
+                logger.info(f"[Yfinance] 成功获取 {len(results)} 个{market_type}指数行情")
                 return results
 
         except Exception as e:

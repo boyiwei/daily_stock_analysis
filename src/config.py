@@ -165,6 +165,7 @@ class Config:
     schedule_enabled: bool = False            # 是否启用定时任务
     schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
     market_review_enabled: bool = True        # 是否启用大盘复盘
+    market_review_type: str = "A"             # 大盘复盘市场类型: "A" (A股), "US" (美股), "HK" (港股)
 
     # === 实时行情增强数据配置 ===
     # 实时行情开关（关闭后使用历史收盘价进行分析）
@@ -403,6 +404,7 @@ class Config:
             schedule_enabled=os.getenv('SCHEDULE_ENABLED', 'false').lower() == 'true',
             schedule_time=os.getenv('SCHEDULE_TIME', '18:00'),
             market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
+            market_review_type=os.getenv('MARKET_REVIEW_TYPE', 'A').upper(),
             webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
             webui_host=os.getenv('WEBUI_HOST', '127.0.0.1'),
             webui_port=int(os.getenv('WEBUI_PORT', '8000')),

@@ -612,10 +612,17 @@ class TushareFetcher(BaseFetcher):
             logger.warning(f"Tushare (旧版) 获取实时行情失败 {stock_code}: {e}")
             return None
 
-    def get_main_indices(self) -> Optional[List[dict]]:
+    def get_main_indices(self, market_type: str = "A") -> Optional[List[dict]]:
         """
         获取主要指数实时行情 (Tushare Pro)
+        
+        Args:
+            market_type: Market type - only "A" (A-shares) is supported by Tushare
         """
+        # Tushare only supports A-share indices
+        if market_type.upper() != "A":
+            return None
+        
         if self._api is None:
             return None
 
@@ -681,10 +688,17 @@ class TushareFetcher(BaseFetcher):
 
         return None
 
-    def get_market_stats(self) -> Optional[dict]:
+    def get_market_stats(self, market_type: str = "A") -> Optional[dict]:
         """
         获取市场涨跌统计 (Tushare Pro)
+        
+        Args:
+            market_type: Market type - only "A" (A-shares) is supported
         """
+        # Tushare only supports A-share market stats
+        if market_type.upper() != "A":
+            return None
+        
         if self._api is None:
             return None
 
@@ -752,9 +766,13 @@ class TushareFetcher(BaseFetcher):
 
         return None
 
-    def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[list, list]]:
+    def get_sector_rankings(self, n: int = 5, market_type: str = "A") -> Optional[Tuple[list, list]]:
         """
         获取板块涨跌榜 (Tushare Pro)
+        
+        Args:
+            n: Number of top/bottom sectors to return
+            market_type: Market type - only "A" (A-shares) is supported
         """
         # Tushare 获取板块数据较复杂，暂时返回 None，让 AkShare 处理
         return None

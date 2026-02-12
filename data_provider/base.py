@@ -131,9 +131,12 @@ class BaseFetcher(ABC):
         """
         pass
 
-    def get_main_indices(self) -> Optional[List[Dict[str, Any]]]:
+    def get_main_indices(self, market_type: str = "A") -> Optional[List[Dict[str, Any]]]:
         """
         获取主要指数实时行情
+
+        Args:
+            market_type: Market type - "A" (A-shares), "US" (US stocks), "HK" (Hong Kong)
 
         Returns:
             List[Dict]: 指数列表，每个元素为字典，包含:
@@ -147,9 +150,12 @@ class BaseFetcher(ABC):
         """
         return None
 
-    def get_market_stats(self) -> Optional[Dict[str, Any]]:
+    def get_market_stats(self, market_type: str = "A") -> Optional[Dict[str, Any]]:
         """
         获取市场涨跌统计
+
+        Args:
+            market_type: Market type - "A" (A-shares), "US" (US stocks), "HK" (Hong Kong)
 
         Returns:
             Dict: 包含:
@@ -162,12 +168,13 @@ class BaseFetcher(ABC):
         """
         return None
 
-    def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
+    def get_sector_rankings(self, n: int = 5, market_type: str = "A") -> Optional[Tuple[List[Dict], List[Dict]]]:
         """
         获取板块涨跌榜
 
         Args:
             n: 返回前n个
+            market_type: Market type - "A" (A-shares), "US" (US stocks), "HK" (Hong Kong)
 
         Returns:
             Tuple: (领涨板块列表, 领跌板块列表)
@@ -878,11 +885,30 @@ class DataFetcherManager:
         logger.info(f"[股票名称] 批量获取完成，成功 {len(result)}/{len(stock_codes)}")
         return result
 
-    def get_main_indices(self) -> List[Dict[str, Any]]:
-        """获取主要指数实时行情（自动切换数据源）"""
+    def get_main_indices(self, market_type: str = "A") -> List[Dict[str, Any]]:
+        """
+        获取主要指数实时行情（自动切换数据源）
+        
+        Args:
+            market_type: Market type - "A" (A-shares), "US" (US stocks), "HK" (Hong Kong)
+        """
+        # For non-A-share markets, prioritize YfinanceFetcher as it supports global markets
+        if market_type.upper() in ("US", "HK"):
+            from .yfinance_fetcher import YfinanceFetcher
+            yf_fetcher = YfinanceFetcher()
+            try:
+                data = yf_fetcher.get_main_indices(market_type=market_type)
+                if data:
+                    logger.info(f"[YfinanceFetcher] 获取{market_type}指数行情成功")
+                    return data
+            except Exception as e:
+                logger.warning(f"[YfinanceFetcher] 获取{market_type}指数行情失败: {e}")
+            return []
+        
+        # For A-shares, use the standard fetcher chain
         for fetcher in self._fetchers:
             try:
-                data = fetcher.get_main_indices()
+                data = fetcher.get_main_indices(market_type=market_type)
                 if data:
                     logger.info(f"[{fetcher.name}] 获取指数行情成功")
                     return data
@@ -891,11 +917,21 @@ class DataFetcherManager:
                 continue
         return []
 
-    def get_market_stats(self) -> Dict[str, Any]:
-        """获取市场涨跌统计（自动切换数据源）"""
+    def get_market_stats(self, market_type: str = "A") -> Dict[str, Any]:
+        """
+        获取市场涨跌统计（自动切换数据源）
+        
+        Args:
+            market_type: Market type - "A" (A-shares), "US" (US stocks), "HK" (Hong Kong)
+        """
+        # US/HK markets don't have limit up/down stats - return empty for now
+        if market_type.upper() in ("US", "HK"):
+            logger.info(f"[Market] {market_type}市场暂不支持涨跌统计")
+            return {}
+        
         for fetcher in self._fetchers:
             try:
-                data = fetcher.get_market_stats()
+                data = fetcher.get_market_stats(market_type=market_type)
                 if data:
                     logger.info(f"[{fetcher.name}] 获取市场统计成功")
                     return data
@@ -904,11 +940,22 @@ class DataFetcherManager:
                 continue
         return {}
 
-    def get_sector_rankings(self, n: int = 5) -> Tuple[List[Dict], List[Dict]]:
-        """获取板块涨跌榜（自动切换数据源）"""
+    def get_sector_rankings(self, n: int = 5, market_type: str = "A") -> Tuple[List[Dict], List[Dict]]:
+        """
+        获取板块涨跌榜（自动切换数据源）
+        
+        Args:
+            n: 返回前n个
+            market_type: Market type - "A" (A-shares), "US" (US stocks), "HK" (Hong Kong)
+        """
+        # US/HK markets don't have sector rankings in the same format - return empty for now
+        if market_type.upper() in ("US", "HK"):
+            logger.info(f"[Market] {market_type}市场暂不支持板块排行")
+            return [], []
+        
         for fetcher in self._fetchers:
             try:
-                data = fetcher.get_sector_rankings(n)
+                data = fetcher.get_sector_rankings(n, market_type=market_type)
                 if data:
                     logger.info(f"[{fetcher.name}] 获取板块排行成功")
                     return data

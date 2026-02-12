@@ -657,10 +657,17 @@ class EfinanceFetcher(BaseFetcher):
             circuit_breaker.record_failure(source_key, str(e))
             return None
 
-    def get_main_indices(self) -> Optional[List[Dict[str, Any]]]:
+    def get_main_indices(self, market_type: str = "A") -> Optional[List[Dict[str, Any]]]:
         """
         获取主要指数实时行情 (efinance)
+        
+        Args:
+            market_type: Market type - only "A" (A-shares) is supported by efinance
         """
+        # efinance only supports A-share indices
+        if market_type.upper() != "A":
+            return None
+        
         import efinance as ef
 
         indices_map = {
@@ -732,10 +739,17 @@ class EfinanceFetcher(BaseFetcher):
             logger.error(f"[efinance] 获取指数行情失败: {e}")
             return None
 
-    def get_market_stats(self) -> Optional[Dict[str, Any]]:
+    def get_market_stats(self, market_type: str = "A") -> Optional[Dict[str, Any]]:
         """
         获取市场涨跌统计 (efinance)
+        
+        Args:
+            market_type: Market type - only "A" (A-shares) is supported
         """
+        # efinance only supports A-share market stats
+        if market_type.upper() != "A":
+            return None
+        
         import efinance as ef
 
         try:
@@ -780,10 +794,18 @@ class EfinanceFetcher(BaseFetcher):
             logger.error(f"[efinance] 获取市场统计失败: {e}")
             return None
 
-    def get_sector_rankings(self, n: int = 5) -> Optional[Tuple[List[Dict], List[Dict]]]:
+    def get_sector_rankings(self, n: int = 5, market_type: str = "A") -> Optional[Tuple[List[Dict], List[Dict]]]:
         """
         获取板块涨跌榜 (efinance)
+        
+        Args:
+            n: Number of top/bottom sectors to return
+            market_type: Market type - only "A" (A-shares) is supported
         """
+        # efinance only supports A-share sector rankings
+        if market_type.upper() != "A":
+            return None
+        
         import efinance as ef
 
         try:
