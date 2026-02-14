@@ -294,6 +294,70 @@ class YfinanceFetcher(BaseFetcher):
 
         return None
 
+    def get_us_indices(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        Fetch major US market indices via Yahoo Finance.
+
+        Returns S&P 500, Nasdaq Composite, and Dow Jones Industrial Average.
+        """
+        import yfinance as yf
+
+        us_mapping = {
+            'us_spx': ('^GSPC', 'S&P 500'),
+            'us_ixic': ('^IXIC', 'Nasdaq'),
+            'us_dji': ('^DJI', 'Dow Jones'),
+        }
+
+        results = []
+        try:
+            for std_code, (yf_code, name) in us_mapping.items():
+                try:
+                    ticker = yf.Ticker(yf_code)
+                    hist = ticker.history(period='2d')
+                    if hist.empty:
+                        continue
+
+                    today = hist.iloc[-1]
+                    prev = hist.iloc[-2] if len(hist) > 1 else today
+
+                    price = float(today['Close'])
+                    prev_close = float(prev['Close'])
+                    change = price - prev_close
+                    change_pct = (change / prev_close) * 100 if prev_close else 0
+
+                    high = float(today['High'])
+                    low = float(today['Low'])
+                    amplitude = ((high - low) / prev_close * 100) if prev_close else 0
+
+                    results.append({
+                        'code': std_code,
+                        'name': name,
+                        'current': price,
+                        'change': change,
+                        'change_pct': change_pct,
+                        'open': float(today['Open']),
+                        'high': high,
+                        'low': low,
+                        'prev_close': prev_close,
+                        'volume': float(today['Volume']),
+                        'amount': 0.0,
+                        'amplitude': amplitude,
+                    })
+                    logger.debug(f"[Yfinance] Fetched US index {name}")
+
+                except Exception as e:
+                    logger.warning(f"[Yfinance] Failed to fetch US index {name}: {e}")
+                    continue
+
+            if results:
+                logger.info(f"[Yfinance] Fetched {len(results)} US indices")
+                return results
+
+        except Exception as e:
+            logger.error(f"[Yfinance] Failed to fetch US indices: {e}")
+
+        return None
+
     def _is_us_stock(self, stock_code: str) -> bool:
         """
         判断代码是否为美股

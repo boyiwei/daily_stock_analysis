@@ -61,7 +61,8 @@ class MarketIndex:
 class MarketOverview:
     """市场概览数据"""
     date: str                           # 日期
-    indices: List[MarketIndex] = field(default_factory=list)  # 主要指数
+    indices: List[MarketIndex] = field(default_factory=list)  # A-share indices
+    us_indices: List[MarketIndex] = field(default_factory=list)  # US market indices
     up_count: int = 0                   # 上涨家数
     down_count: int = 0                 # 下跌家数
     flat_count: int = 0                 # 平盘家数
@@ -69,7 +70,7 @@ class MarketOverview:
     limit_down_count: int = 0           # 跌停家数
     total_amount: float = 0.0           # 两市成交额（亿元）
     # north_flow: float = 0.0           # 北向资金净流入（亿元）- 已废弃，接口不可用
-    
+
     # 板块涨幅榜
     top_sectors: List[Dict] = field(default_factory=list)     # 涨幅前5板块
     bottom_sectors: List[Dict] = field(default_factory=list)  # 跌幅前5板块
@@ -110,17 +111,17 @@ class MarketAnalyzer:
         today = datetime.now().strftime('%Y-%m-%d')
         overview = MarketOverview(date=today)
         
-        # 1. 获取主要指数行情
+        # 1. 获取主要指数行情 (A-share)
         overview.indices = self._get_main_indices()
+
+        # 2. 获取美股主要指数行情
+        overview.us_indices = self._get_us_indices()
         
-        # 2. 获取涨跌统计
+        # 3. 获取涨跌统计
         self._get_market_statistics(overview)
         
-        # 3. 获取板块涨跌榜
+        # 4. 获取板块涨跌榜
         self._get_sector_rankings(overview)
-        
-        # 4. 获取北向资金（可选）
-        # self._get_north_flow(overview)
         
         return overview
 
@@ -161,6 +162,41 @@ class MarketAnalyzer:
 
         except Exception as e:
             logger.error(f"[大盘] 获取指数行情失败: {e}")
+
+        return indices
+
+    def _get_us_indices(self) -> List[MarketIndex]:
+        """Fetch major US market indices (S&P 500, Nasdaq, Dow Jones)."""
+        indices = []
+        try:
+            logger.info("[US Market] Fetching US market indices...")
+            data_list = self.data_manager.get_us_indices()
+
+            if data_list:
+                for item in data_list:
+                    index = MarketIndex(
+                        code=item['code'],
+                        name=item['name'],
+                        current=item['current'],
+                        change=item['change'],
+                        change_pct=item['change_pct'],
+                        open=item['open'],
+                        high=item['high'],
+                        low=item['low'],
+                        prev_close=item.get('prev_close', 0.0),
+                        volume=item['volume'],
+                        amount=item['amount'],
+                        amplitude=item.get('amplitude', 0.0),
+                    )
+                    indices.append(index)
+
+            if not indices:
+                logger.warning("[US Market] Failed to fetch US indices")
+            else:
+                logger.info(f"[US Market] Fetched {len(indices)} US indices")
+
+        except Exception as e:
+            logger.error(f"[US Market] Error fetching US indices: {e}")
 
         return indices
 
@@ -239,11 +275,12 @@ class MarketAnalyzer:
         today = datetime.now()
         date_str = today.strftime('%Y年%m月%d日')
 
-        # 多维度搜索
+        # Multi-dimension search: A-share + US market
         search_queries = [
             "A股 大盘 复盘",
             "股市 行情 分析",
             "A股 市场 热点 板块",
+            "US stock market S&P 500 Nasdaq today",
         ]
         
         try:
@@ -288,24 +325,16 @@ class MarketAnalyzer:
         
         try:
             logger.info("[大盘] 调用大模型生成复盘报告...")
-            
+
             generation_config = {
                 'temperature': 0.7,
                 'max_output_tokens': 2048,
             }
-            
-            # 根据 analyzer 使用的 API 类型调用
-            if self.analyzer._use_openai:
-                # 使用 OpenAI 兼容 API
-                review = self.analyzer._call_openai_api(prompt, generation_config)
-            else:
-                # 使用 Gemini API
-                response = self.analyzer._model.generate_content(
-                    prompt,
-                    generation_config=generation_config,
-                )
-                review = response.text.strip() if response and response.text else None
-            
+
+            # Use unified API call with retry and full fallback chain
+            # (Gemini -> OpenAI -> AI Sandbox)
+            review = self.analyzer._call_api_with_retry(prompt, generation_config)
+
             if review:
                 logger.info(f"[大盘] 复盘报告生成成功，长度: {len(review)} 字符")
                 # Inject structured data tables into LLM prose sections
@@ -325,19 +354,24 @@ class MarketAnalyzer:
         # Build data blocks
         stats_block = self._build_stats_block(overview)
         indices_block = self._build_indices_block(overview)
+        us_indices_block = self._build_us_indices_block(overview)
         sector_block = self._build_sector_block(overview)
 
         # Inject market stats after "### 一、市场总结" section (before next ###)
         if stats_block:
             review = self._insert_after_section(review, r'###\s*一、市场总结', stats_block)
 
-        # Inject indices table after "### 二、指数点评" section
+        # Inject A-share indices table after "### 二、" section (A股指数点评)
         if indices_block:
-            review = self._insert_after_section(review, r'###\s*二、指数点评', indices_block)
+            review = self._insert_after_section(review, r'###\s*二、', indices_block)
 
-        # Inject sector rankings after "### 四、热点解读" section
+        # Inject US indices table after "### 三、" section (美股市场回顾)
+        if us_indices_block:
+            review = self._insert_after_section(review, r'###\s*三、', us_indices_block)
+
+        # Inject sector rankings after "### 五、" section (热点解读)
         if sector_block:
-            review = self._insert_after_section(review, r'###\s*四、热点解读', sector_block)
+            review = self._insert_after_section(review, r'###\s*五、', sector_block)
 
         return review
 
@@ -374,7 +408,7 @@ class MarketAnalyzer:
         return "\n".join(lines)
 
     def _build_indices_block(self, overview: MarketOverview) -> str:
-        """Build indices table block (without amplitude)."""
+        """Build A-share indices table block."""
         if not overview.indices:
             return ""
         lines = [
@@ -385,6 +419,25 @@ class MarketAnalyzer:
             amount_raw = idx.amount or 0.0
             amount_yi = amount_raw / 1e8 if amount_raw > 1e6 else amount_raw
             lines.append(f"| {idx.name} | {idx.current:.2f} | {arrow} {idx.change_pct:+.2f}% | {amount_yi:.0f} |")
+        return "\n".join(lines)
+
+    def _build_us_indices_block(self, overview: MarketOverview) -> str:
+        """Build US market indices table block."""
+        if not overview.us_indices:
+            return ""
+        lines = [
+            "| Index | Last | Change | Volume |",
+            "|-------|------|--------|--------|"]
+        for idx in overview.us_indices:
+            arrow = "🔴" if idx.change_pct < 0 else "🟢" if idx.change_pct > 0 else "⚪"
+            vol = idx.volume or 0.0
+            if vol >= 1e9:
+                vol_str = f"{vol / 1e9:.1f}B"
+            elif vol >= 1e6:
+                vol_str = f"{vol / 1e6:.1f}M"
+            else:
+                vol_str = f"{vol:.0f}"
+            lines.append(f"| {idx.name} | {idx.current:.2f} | {arrow} {idx.change_pct:+.2f}% | {vol_str} |")
         return "\n".join(lines)
 
     def _build_sector_block(self, overview: MarketOverview) -> str:
@@ -406,19 +459,25 @@ class MarketAnalyzer:
 
     def _build_review_prompt(self, overview: MarketOverview, news: List) -> str:
         """构建复盘报告 Prompt"""
-        # 指数行情信息（简洁格式，不用emoji）
+        # A-share indices
         indices_text = ""
         for idx in overview.indices:
             direction = "↑" if idx.change_pct > 0 else "↓" if idx.change_pct < 0 else "-"
             indices_text += f"- {idx.name}: {idx.current:.2f} ({direction}{abs(idx.change_pct):.2f}%)\n"
-        
+
+        # US market indices
+        us_indices_text = ""
+        for idx in overview.us_indices:
+            direction = "↑" if idx.change_pct > 0 else "↓" if idx.change_pct < 0 else "-"
+            us_indices_text += f"- {idx.name}: {idx.current:.2f} ({direction}{abs(idx.change_pct):.2f}%)\n"
+
         # 板块信息
         top_sectors_text = ", ".join([f"{s['name']}({s['change_pct']:+.2f}%)" for s in overview.top_sectors[:3]])
         bottom_sectors_text = ", ".join([f"{s['name']}({s['change_pct']:+.2f}%)" for s in overview.bottom_sectors[:3]])
-        
+
         # 新闻信息 - 支持 SearchResult 对象或字典
         news_text = ""
-        for i, n in enumerate(news[:6], 1):
+        for i, n in enumerate(news[:8], 1):
             # 兼容 SearchResult 对象和字典
             if hasattr(n, 'title'):
                 title = n.title[:50] if n.title else ''
@@ -427,7 +486,7 @@ class MarketAnalyzer:
                 title = n.get('title', '')[:50]
                 snippet = n.get('snippet', '')[:100]
             news_text += f"{i}. {title}\n   {snippet}\n"
-        
+
         prompt = f"""你是一位专业的A/H/美股市场分析师，请根据以下数据生成一份简洁的大盘复盘报告。
 
 【重要】输出要求：
@@ -435,6 +494,7 @@ class MarketAnalyzer:
 - 禁止输出 JSON 格式
 - 禁止输出代码块
 - emoji 仅在标题处少量使用（每个标题最多1个）
+- 必须同时覆盖 A股 和 美股 两个市场
 
 ---
 
@@ -443,22 +503,25 @@ class MarketAnalyzer:
 ## 日期
 {overview.date}
 
-## 主要指数
-{indices_text if indices_text else "暂无指数数据（接口异常）"}
+## A股主要指数
+{indices_text if indices_text else "暂无A股指数数据（接口异常）"}
 
-## 市场概况
+## 美股主要指数
+{us_indices_text if us_indices_text else "暂无美股指数数据"}
+
+## A股市场概况
 - 上涨: {overview.up_count} 家 | 下跌: {overview.down_count} 家 | 平盘: {overview.flat_count} 家
 - 涨停: {overview.limit_up_count} 家 | 跌停: {overview.limit_down_count} 家
 - 两市成交额: {overview.total_amount:.0f} 亿元
 
-## 板块表现
+## A股板块表现
 领涨: {top_sectors_text if top_sectors_text else "暂无数据"}
 领跌: {bottom_sectors_text if bottom_sectors_text else "暂无数据"}
 
 ## 市场新闻
 {news_text if news_text else "暂无相关新闻"}
 
-{"注意：由于行情数据获取失败，请主要根据【市场新闻】进行定性分析和总结，不要编造具体的指数点位。" if not indices_text else ""}
+{"注意：由于行情数据获取失败，请主要根据【市场新闻】进行定性分析和总结，不要编造具体的指数点位。" if not indices_text and not us_indices_text else ""}
 
 ---
 
@@ -467,21 +530,24 @@ class MarketAnalyzer:
 ## 📊 {overview.date} 大盘复盘
 
 ### 一、市场总结
-（2-3句话概括今日市场整体表现，包括指数涨跌、成交量变化）
+（2-3句话概括今日A股和美股市场整体表现，包括指数涨跌、成交量变化）
 
-### 二、指数点评
+### 二、A股指数点评
 （分析上证、深证、创业板等各指数走势特点）
 
-### 三、资金动向
+### 三、美股市场回顾
+（分析标普500、纳斯达克、道琼斯等美股主要指数表现，解读影响因素）
+
+### 四、资金动向
 （解读成交额流向的含义）
 
-### 四、热点解读
+### 五、热点解读
 （分析领涨领跌板块背后的逻辑和驱动因素）
 
-### 五、后市展望
-（结合当前走势和新闻，给出明日市场预判）
+### 六、后市展望
+（结合A股和美股走势、新闻，给出明日市场预判）
 
-### 六、风险提示
+### 七、风险提示
 （需要关注的风险点）
 
 ---
@@ -492,8 +558,8 @@ class MarketAnalyzer:
     
     def _generate_template_review(self, overview: MarketOverview, news: List) -> str:
         """使用模板生成复盘报告（无大模型时的备选方案）"""
-        
-        # 判断市场走势
+
+        # A-share market mood
         sh_index = next((idx for idx in overview.indices if idx.code == '000001'), None)
         if sh_index:
             if sh_index.change_pct > 1:
@@ -506,26 +572,35 @@ class MarketAnalyzer:
                 market_mood = "明显下跌"
         else:
             market_mood = "震荡整理"
-        
-        # 指数行情（简洁格式）
+
+        # A-share indices
         indices_text = ""
         for idx in overview.indices[:4]:
             direction = "↑" if idx.change_pct > 0 else "↓" if idx.change_pct < 0 else "-"
             indices_text += f"- **{idx.name}**: {idx.current:.2f} ({direction}{abs(idx.change_pct):.2f}%)\n"
-        
+
+        # US indices
+        us_indices_text = ""
+        for idx in overview.us_indices:
+            direction = "↑" if idx.change_pct > 0 else "↓" if idx.change_pct < 0 else "-"
+            us_indices_text += f"- **{idx.name}**: {idx.current:.2f} ({direction}{abs(idx.change_pct):.2f}%)\n"
+
         # 板块信息
         top_text = "、".join([s['name'] for s in overview.top_sectors[:3]])
         bottom_text = "、".join([s['name'] for s in overview.bottom_sectors[:3]])
-        
+
         report = f"""## 📊 {overview.date} 大盘复盘
 
 ### 一、市场总结
 今日A股市场整体呈现**{market_mood}**态势。
 
-### 二、主要指数
-{indices_text}
+### 二、A股主要指数
+{indices_text if indices_text else "暂无A股指数数据"}
 
-### 三、涨跌统计
+### 三、美股主要指数
+{us_indices_text if us_indices_text else "暂无美股指数数据"}
+
+### 四、A股涨跌统计
 | 指标 | 数值 |
 |------|------|
 | 上涨家数 | {overview.up_count} |
@@ -534,11 +609,11 @@ class MarketAnalyzer:
 | 跌停 | {overview.limit_down_count} |
 | 两市成交额 | {overview.total_amount:.0f}亿 |
 
-### 四、板块表现
+### 五、板块表现
 - **领涨**: {top_text}
 - **领跌**: {bottom_text}
 
-### 五、风险提示
+### 六、风险提示
 市场有风险，投资需谨慎。以上数据仅供参考，不构成投资建议。
 
 ---

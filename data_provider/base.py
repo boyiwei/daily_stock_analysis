@@ -147,6 +147,15 @@ class BaseFetcher(ABC):
         """
         return None
 
+    def get_us_indices(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        Fetch major US market indices (S&P 500, Nasdaq, Dow Jones).
+
+        Returns:
+            List[Dict] with same schema as get_main_indices(), or None.
+        """
+        return None
+
     def get_market_stats(self) -> Optional[Dict[str, Any]]:
         """
         获取市场涨跌统计
@@ -888,6 +897,19 @@ class DataFetcherManager:
                     return data
             except Exception as e:
                 logger.warning(f"[{fetcher.name}] 获取指数行情失败: {e}")
+                continue
+        return []
+
+    def get_us_indices(self) -> List[Dict[str, Any]]:
+        """Fetch major US market indices (auto-switch data source)."""
+        for fetcher in self._fetchers:
+            try:
+                data = fetcher.get_us_indices()
+                if data:
+                    logger.info(f"[{fetcher.name}] Fetched US indices successfully")
+                    return data
+            except Exception as e:
+                logger.warning(f"[{fetcher.name}] Failed to fetch US indices: {e}")
                 continue
         return []
 
