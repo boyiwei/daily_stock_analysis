@@ -226,6 +226,48 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "validation": {},
         "display_order": 60,
     },
+    "AI_SANDBOX_KEY": {
+        "title": "AI Sandbox Key",
+        "description": "API key for AI Sandbox (Portkey gateway).",
+        "category": "ai_model",
+        "data_type": "string",
+        "ui_control": "password",
+        "is_sensitive": True,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": None,
+        "options": [],
+        "validation": {},
+        "display_order": 70,
+    },
+    "AI_SANDBOX_MODEL": {
+        "title": "AI Sandbox Model",
+        "description": "Model name for AI Sandbox.",
+        "category": "ai_model",
+        "data_type": "string",
+        "ui_control": "text",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "gemini-3-flash-preview",
+        "options": [],
+        "validation": {},
+        "display_order": 80,
+    },
+    "AI_SANDBOX_TEMPERATURE": {
+        "title": "AI Sandbox Temperature",
+        "description": "Temperature in range [0.0, 2.0] for AI Sandbox.",
+        "category": "ai_model",
+        "data_type": "number",
+        "ui_control": "number",
+        "is_sensitive": False,
+        "is_required": False,
+        "is_editable": True,
+        "default_value": "0.7",
+        "options": [],
+        "validation": {"min": 0.0, "max": 2.0},
+        "display_order": 90,
+    },
     "WECHAT_WEBHOOK_URL": {
         "title": "WeChat Webhook URL",
         "description": "Webhook URL for enterprise WeChat bot.",
@@ -524,7 +566,7 @@ def _infer_category(key: str) -> str:
         return "base"
     if key.startswith("BACKTEST_"):
         return "backtest"
-    if key.startswith(("GEMINI_", "OPENAI_")):
+    if key.startswith(("GEMINI_", "OPENAI_", "AI_SANDBOX_")):
         return "ai_model"
     if key.endswith("_PRIORITY") or key.startswith(
         (
