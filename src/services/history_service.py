@@ -183,6 +183,9 @@ class HistoryService:
         try:
             records = self.db.get_news_intel_by_query_id(query_id=query_id, limit=limit)
 
+            if not records:
+                records = self._fallback_news_by_analysis_context(query_id=query_id, limit=limit)
+
             items: List[Dict[str, str]] = []
             for record in records:
                 snippet = (record.snippet or "").strip()
@@ -199,6 +202,35 @@ class HistoryService:
         except Exception as e:
             logger.error(f"查询新闻情报失败: {e}", exc_info=True)
             return []
+
+    def _fallback_news_by_analysis_context(self, query_id: str, limit: int) -> List[Any]:
+        """
+        Fallback by analysis context when direct query_id lookup returns no news.
+
+        Typical scenarios:
+        - URL-level dedup keeps one canonical news row across repeated analyses.
+        - Legacy records may have different historical query_id strategies.
+        """
+        records = self.db.get_analysis_history(query_id=query_id, limit=1)
+        if not records:
+            return []
+
+        analysis = records[0]
+        if not analysis.code or not analysis.created_at:
+            return []
+
+        # Narrow down to same-stock recent news, then filter by analysis time window.
+        days = max(1, (datetime.now() - analysis.created_at).days + 1)
+        candidates = self.db.get_recent_news(code=analysis.code, days=days, limit=max(limit * 5, 50))
+
+        start_time = analysis.created_at - timedelta(hours=6)
+        end_time = analysis.created_at + timedelta(hours=6)
+        matched = [
+            item for item in candidates
+            if item.fetched_at and start_time <= item.fetched_at <= end_time
+        ]
+
+        return matched[:limit]
     
     def _get_sentiment_label(self, score: int) -> str:
         """

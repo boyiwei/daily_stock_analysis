@@ -13,7 +13,8 @@ RUN npm ci
 COPY apps/dsa-web/ ./
 RUN npm run build
 
-FROM python:3.11-slim
+# Pin to bookworm: wkhtmltopdf was removed from Debian testing (2025)
+FROM python:3.11-slim-bookworm
 
 # 设置工作目录
 WORKDIR /app
@@ -22,10 +23,15 @@ WORKDIR /app
 ENV TZ=Asia/Shanghai
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-# 安装系统依赖
+# 安装系统依赖（wkhtmltopdf 含 wkhtmltoimage，用于 Markdown 转图片 Issue #289）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     curl \
+    wkhtmltopdf \
+    fontconfig \
+    libjpeg62-turbo \
+    libxrender1 \
+    libxext6 \
     && rm -rf /var/lib/apt/lists/*
 
 # 复制依赖文件

@@ -44,6 +44,9 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional
 
+from src.core.pipeline import StockAnalysisPipeline
+from src.core.market_review import run_market_review
+
 from src.config import get_config, Config
 from src.logging_config import setup_logging
 
@@ -209,9 +212,6 @@ def run_full_analysis(
     这是定时任务调用的主函数
     """
     try:
-        from src.core.pipeline import StockAnalysisPipeline
-        from src.core.market_review import run_market_review
-
         # 命令行参数 --single-notify 覆盖配置（#55）
         if getattr(args, 'single_notify', False):
             config.single_stock_notify = True
@@ -339,7 +339,7 @@ def start_api_server(host: str, port: int, config: Config) -> None:
     """
     import threading
     import uvicorn
-    
+
     def run_server():
         level_name = (config.log_level or "INFO").lower()
         uvicorn.run(
@@ -349,7 +349,7 @@ def start_api_server(host: str, port: int, config: Config) -> None:
             log_level=level_name,
             log_config=None,
         )
-    
+
     thread = threading.Thread(target=run_server, daemon=True)
     thread.start()
     logger.info(f"FastAPI 服务已启动: http://{host}:{port}")
@@ -403,23 +403,23 @@ def main() -> int:
 
     # 配置日志（输出到控制台和文件）
     setup_logging(log_prefix="stock_analysis", debug=args.debug, log_dir=config.log_dir)
-    
+
     logger.info("=" * 60)
     logger.info("A股自选股智能分析系统 启动")
     logger.info(f"运行时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("=" * 60)
-    
+
     # 验证配置
     warnings = config.validate()
     for warning in warnings:
         logger.warning(warning)
-    
+
     # 解析股票列表
     stock_codes = None
     if args.stocks:
         stock_codes = [code.strip() for code in args.stocks.split(',') if code.strip()]
         logger.info(f"使用命令行指定的股票列表: {stock_codes}")
-    
+
     # === 处理 --webui / --webui-only 参数，映射到 --serve / --serve-only ===
     if args.webui:
         args.serve = True
@@ -439,7 +439,7 @@ def main() -> int:
             args.host = os.getenv('WEBUI_HOST')
         if args.port == 8000 and os.getenv('WEBUI_PORT'):
             args.port = int(os.getenv('WEBUI_PORT'))
-    
+
     bot_clients_started = False
     if start_serve:
         try:
@@ -447,10 +447,10 @@ def main() -> int:
             bot_clients_started = True
         except Exception as e:
             logger.error(f"启动 FastAPI 服务失败: {e}")
-    
+
     if bot_clients_started:
         start_bot_stream_clients(config)
-    
+
     # === 仅 Web 服务模式：不自动执行分析 ===
     if args.serve_only:
         logger.info("模式: 仅 Web 服务")
@@ -492,11 +492,11 @@ def main() -> int:
 
             logger.info("模式: 仅大盘复盘")
             notifier = NotificationService()
-            
+
             # 初始化搜索服务和分析器（如果有配置）
             search_service = None
             analyzer = None
-            
+
             if config.bocha_api_keys or config.tavily_api_keys or config.brave_api_keys or config.serpapi_keys:
                 search_service = SearchService(
                     bocha_keys=config.bocha_api_keys,
@@ -504,7 +504,7 @@ def main() -> int:
                     brave_keys=config.brave_api_keys,
                     serpapi_keys=config.serpapi_keys
                 )
-            
+
             if config.gemini_api_key or config.openai_api_key:
                 analyzer = GeminiAnalyzer(api_key=config.gemini_api_key)
                 if not analyzer.is_available():
@@ -512,37 +512,37 @@ def main() -> int:
                     analyzer = None
             else:
                 logger.warning("未检测到 API Key (Gemini/OpenAI)，将仅使用模板生成报告")
-            
+
             run_market_review(
-                notifier=notifier, 
-                analyzer=analyzer, 
+                notifier=notifier,
+                analyzer=analyzer,
                 search_service=search_service,
                 send_notification=not args.no_notify
             )
             return 0
-        
+
         # 模式2: 定时任务模式
         if args.schedule or config.schedule_enabled:
             logger.info("模式: 定时任务")
             logger.info(f"每日执行时间: {config.schedule_time}")
-            
+
             from src.scheduler import run_with_schedule
-            
+
             def scheduled_task():
                 run_full_analysis(config, args, stock_codes)
-            
+
             run_with_schedule(
                 task=scheduled_task,
                 schedule_time=config.schedule_time,
                 run_immediately=True  # 启动时先执行一次
             )
             return 0
-        
+
         # 模式3: 正常单次运行
         run_full_analysis(config, args, stock_codes)
-        
+
         logger.info("\n程序执行完成")
-        
+
         # 如果启用了服务且是非定时任务模式，保持程序运行
         keep_running = start_serve and not (args.schedule or config.schedule_enabled)
         if keep_running:
@@ -552,13 +552,13 @@ def main() -> int:
                     time.sleep(1)
             except KeyboardInterrupt:
                 pass
-        
+
         return 0
-        
+
     except KeyboardInterrupt:
         logger.info("\n用户中断，程序退出")
         return 130
-        
+
     except Exception as e:
         logger.exception(f"程序执行失败: {e}")
         return 1

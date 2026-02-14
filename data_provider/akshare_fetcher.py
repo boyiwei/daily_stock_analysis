@@ -40,6 +40,7 @@ from tenacity import (
     before_sleep_log,
 )
 
+from patch.eastmoney_patch import eastmoney_patch
 from .base import BaseFetcher, DataFetchError, RateLimitError, STANDARD_COLUMNS
 from .realtime_types import (
     UnifiedRealtimeQuote, ChipDistribution, RealtimeSource,
@@ -186,6 +187,7 @@ class AkshareFetcher(BaseFetcher):
         self.sleep_min = sleep_min
         self.sleep_max = sleep_max
         self._last_request_time: Optional[float] = None
+        eastmoney_patch()
     
     def _set_random_user_agent(self) -> None:
         """

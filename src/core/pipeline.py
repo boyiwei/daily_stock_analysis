@@ -14,6 +14,7 @@ A股自选股智能分析系统 - 核心分析流水线
 import logging
 import time
 import uuid
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from typing import List, Dict, Any, Optional, Tuple
@@ -146,7 +147,7 @@ class StockAnalysisPipeline:
             logger.error(f"[{code}] {error_msg}")
             return False, error_msg
     
-    def analyze_stock(self, code: str, report_type: ReportType) -> Optional[AnalysisResult]:
+    def analyze_stock(self, code: str, report_type: ReportType, query_id: str) -> Optional[AnalysisResult]:
         """
         分析单只股票（增强版：含量比、换手率、筹码分析、多维度情报）
         
@@ -159,6 +160,7 @@ class StockAnalysisPipeline:
         6. 调用 AI 进行综合分析
         
         Args:
+            query_id: 查询链路关联 id
             code: 股票代码
             report_type: 报告类型
             
@@ -243,7 +245,7 @@ class StockAnalysisPipeline:
 
                     # 保存新闻情报到数据库（用于后续复盘与查询）
                     try:
-                        query_context = self._build_query_context()
+                        query_context = self._build_query_context(query_id=query_id)
                         for dim_name, response in intel_results.items():
                             if response and response.success and response.results:
                                 self.db.save_news_intel(
@@ -293,13 +295,8 @@ class StockAnalysisPipeline:
                 result.change_pct = realtime_data.get('change_pct')
 
             # Step 8: 保存分析历史记录
-            # Fix #281/#298: generate a unique query_id per stock so each
-            # history detail page shows its own analysis result instead of
-            # reusing the batch-level id which caused all stocks to resolve
-            # to the same detail record.
             if result:
                 try:
-                    per_stock_query_id = uuid.uuid4().hex
                     context_snapshot = self._build_context_snapshot(
                         enhanced_context=enhanced_context,
                         news_content=news_context,
@@ -308,7 +305,7 @@ class StockAnalysisPipeline:
                     )
                     self.db.save_analysis_history(
                         result=result,
-                        query_id=per_stock_query_id,
+                        query_id=query_id,
                         report_type=report_type.value,
                         news_content=news_context,
                         context_snapshot=context_snapshot,
@@ -484,12 +481,14 @@ class StockAnalysisPipeline:
             return "web"
         return "system"
 
-    def _build_query_context(self) -> Dict[str, str]:
+    def _build_query_context(self, query_id: Optional[str] = None) -> Dict[str, str]:
         """
         生成用户查询关联信息
         """
+        effective_query_id = query_id or self.query_id or ""
+
         context: Dict[str, str] = {
-            "query_id": self.query_id or "",
+            "query_id": effective_query_id,
             "query_source": self.query_source or "",
         }
 
@@ -510,7 +509,8 @@ class StockAnalysisPipeline:
         code: str,
         skip_analysis: bool = False,
         single_stock_notify: bool = False,
-        report_type: ReportType = ReportType.SIMPLE
+        report_type: ReportType = ReportType.SIMPLE,
+        analysis_query_id: Optional[str] = None,
     ) -> Optional[AnalysisResult]:
         """
         处理单只股票的完整流程
@@ -524,6 +524,7 @@ class StockAnalysisPipeline:
         此方法会被线程池调用，需要处理好异常
 
         Args:
+            analysis_query_id: 查询链路关联 id
             code: 股票代码
             skip_analysis: 是否跳过 AI 分析
             single_stock_notify: 是否启用单股推送模式（每分析完一只立即推送）
@@ -547,7 +548,8 @@ class StockAnalysisPipeline:
                 logger.info(f"[{code}] 跳过 AI 分析（dry-run 模式）")
                 return None
             
-            result = self.analyze_stock(code, report_type)
+            effective_query_id = analysis_query_id or self.query_id or uuid.uuid4().hex
+            result = self.analyze_stock(code, report_type, query_id=effective_query_id)
             
             if result:
                 logger.info(
@@ -568,7 +570,7 @@ class StockAnalysisPipeline:
                             report_content = self.notifier.generate_single_stock_report(result)
                             logger.info(f"[{code}] 使用精简报告格式")
                         
-                        if self.notifier.send(report_content):
+                        if self.notifier.send(report_content, email_stock_codes=[code]):
                             logger.info(f"[{code}] 单股推送成功")
                         else:
                             logger.warning(f"[{code}] 单股推送失败")
@@ -650,7 +652,8 @@ class StockAnalysisPipeline:
                     code,
                     skip_analysis=dry_run,
                     single_stock_notify=single_stock_notify and send_notification,
-                    report_type=report_type  # Issue #119: 传递报告类型
+                    report_type=report_type,  # Issue #119: 传递报告类型
+                    analysis_query_id=uuid.uuid4().hex,
                 ): code
                 for code in stock_codes
             }
@@ -736,6 +739,7 @@ class StockAnalysisPipeline:
 
                 # 其他渠道：发完整报告（避免自定义 Webhook 被 wechat 截断逻辑污染）
                 non_wechat_success = False
+                stock_email_groups = getattr(self.config, 'stock_email_groups', []) or []
                 for channel in channels:
                     if channel == NotificationChannel.WECHAT:
                         continue
@@ -744,7 +748,31 @@ class StockAnalysisPipeline:
                     elif channel == NotificationChannel.TELEGRAM:
                         non_wechat_success = self.notifier.send_to_telegram(report) or non_wechat_success
                     elif channel == NotificationChannel.EMAIL:
-                        non_wechat_success = self.notifier.send_to_email(report) or non_wechat_success
+                        if stock_email_groups:
+                            code_to_emails: Dict[str, Optional[List[str]]] = {}
+                            for r in results:
+                                if r.code not in code_to_emails:
+                                    emails = []
+                                    for stocks, emails_list in stock_email_groups:
+                                        if r.code in stocks:
+                                            emails.extend(emails_list)
+                                    code_to_emails[r.code] = list(dict.fromkeys(emails)) if emails else None
+                            emails_to_results: Dict[Optional[Tuple], List] = defaultdict(list)
+                            for r in results:
+                                recs = code_to_emails.get(r.code)
+                                key = tuple(recs) if recs else None
+                                emails_to_results[key].append(r)
+                            for key, group_results in emails_to_results.items():
+                                grp_report = self.notifier.generate_dashboard_report(group_results)
+                                if key is None:
+                                    non_wechat_success = self.notifier.send_to_email(grp_report) or non_wechat_success
+                                else:
+                                    non_wechat_success = (
+                                        self.notifier.send_to_email(grp_report, receivers=list(key))
+                                        or non_wechat_success
+                                    )
+                        else:
+                            non_wechat_success = self.notifier.send_to_email(report) or non_wechat_success
                     elif channel == NotificationChannel.CUSTOM:
                         non_wechat_success = self.notifier.send_to_custom(report) or non_wechat_success
                     elif channel == NotificationChannel.PUSHPLUS:

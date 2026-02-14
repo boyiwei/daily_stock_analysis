@@ -11,8 +11,9 @@ A股自选股智能分析系统 - 配置管理模块
 """
 
 import os
+import re
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from dotenv import load_dotenv, dotenv_values
 from dataclasses import dataclass, field
 
@@ -104,7 +105,11 @@ class Config:
     email_sender_name: str = "daily_stock_analysis股票分析助手"  # 发件人显示名称
     email_password: Optional[str] = None  # 邮箱密码/授权码
     email_receivers: List[str] = field(default_factory=list)  # 收件人列表（留空则发给自己）
-    
+
+    # Stock-to-email group routing (Issue #268): STOCK_GROUP_N + EMAIL_GROUP_N
+    # When configured, each group's report is sent to that group's emails only.
+    stock_email_groups: List[Tuple[List[str], List[str]]] = field(default_factory=list)
+
     # Pushover 配置（手机/桌面推送通知）
     pushover_user_key: Optional[str] = None  # 用户 Key（https://pushover.net 获取）
     pushover_api_token: Optional[str] = None  # 应用 API Token
@@ -113,7 +118,8 @@ class Config:
     # 适用于：钉钉、Discord、Slack、自建服务等任意支持 POST JSON 的 Webhook
     custom_webhook_urls: List[str] = field(default_factory=list)
     custom_webhook_bearer_token: Optional[str] = None  # Bearer Token（用于需要认证的 Webhook）
-    
+    webhook_verify_ssl: bool = True  # Webhook HTTPS 证书校验，false 可支持自签名（有 MITM 风险）
+
     # Discord 通知配置
     discord_bot_token: Optional[str] = None  # Discord Bot Token
     discord_main_channel_id: Optional[str] = None  # Discord 主频道 ID
@@ -142,7 +148,11 @@ class Config:
     feishu_max_bytes: int = 20000  # 飞书限制约 20KB，默认 20000 字节
     wechat_max_bytes: int = 4000   # 企业微信限制 4096 字节，默认 4000 字节
     wechat_msg_type: str = "markdown"  # 企业微信消息类型，默认 markdown 类型
-    
+
+    # Markdown 转图片（Issue #289）：对不支持 Markdown 的渠道以图片发送
+    markdown_to_image_channels: List[str] = field(default_factory=list)  # 逗号分隔：telegram,wechat,custom,email
+    markdown_to_image_max_chars: int = 15000  # 超过此长度不转换，避免超大图片
+
     # === 数据库配置 ===
     database_path: str = "./data/stock_analysis.db"
 
@@ -378,12 +388,14 @@ class Config:
             email_sender_name=os.getenv('EMAIL_SENDER_NAME', 'daily_stock_analysis股票分析助手'),
             email_password=os.getenv('EMAIL_PASSWORD'),
             email_receivers=[r.strip() for r in os.getenv('EMAIL_RECEIVERS', '').split(',') if r.strip()],
+            stock_email_groups=cls._parse_stock_email_groups(),
             pushover_user_key=os.getenv('PUSHOVER_USER_KEY'),
             pushover_api_token=os.getenv('PUSHOVER_API_TOKEN'),
             pushplus_token=os.getenv('PUSHPLUS_TOKEN'),
             serverchan3_sendkey=os.getenv('SERVERCHAN3_SENDKEY'),
             custom_webhook_urls=[u.strip() for u in os.getenv('CUSTOM_WEBHOOK_URLS', '').split(',') if u.strip()],
             custom_webhook_bearer_token=os.getenv('CUSTOM_WEBHOOK_BEARER_TOKEN'),
+            webhook_verify_ssl=os.getenv('WEBHOOK_VERIFY_SSL', 'true').lower() == 'true',
             discord_bot_token=os.getenv('DISCORD_BOT_TOKEN'),
             discord_main_channel_id=os.getenv('DISCORD_MAIN_CHANNEL_ID'),
             discord_webhook_url=os.getenv('DISCORD_WEBHOOK_URL'),
@@ -395,6 +407,12 @@ class Config:
             feishu_max_bytes=int(os.getenv('FEISHU_MAX_BYTES', '20000')),
             wechat_max_bytes=wechat_max_bytes,
             wechat_msg_type=wechat_msg_type_lower,
+            markdown_to_image_channels=[
+                c.strip().lower()
+                for c in os.getenv('MARKDOWN_TO_IMAGE_CHANNELS', '').split(',')
+                if c.strip()
+            ],
+            markdown_to_image_max_chars=int(os.getenv('MARKDOWN_TO_IMAGE_MAX_CHARS', '15000')),
             database_path=os.getenv('DATABASE_PATH', './data/stock_analysis.db'),
             save_context_snapshot=os.getenv('SAVE_CONTEXT_SNAPSHOT', 'true').lower() == 'true',
             backtest_enabled=os.getenv('BACKTEST_ENABLED', 'true').lower() == 'true',
@@ -450,6 +468,33 @@ class Config:
             circuit_breaker_cooldown=int(os.getenv('CIRCUIT_BREAKER_COOLDOWN', '300'))
         )
     
+    @classmethod
+    def _parse_stock_email_groups(cls) -> List[Tuple[List[str], List[str]]]:
+        """
+        Parse STOCK_GROUP_N and EMAIL_GROUP_N from environment.
+        Returns [(stocks, emails), ...] ordered by group index.
+        """
+        groups: dict = {}
+        stock_re = re.compile(r'^STOCK_GROUP_(\d+)$', re.IGNORECASE)
+        email_re = re.compile(r'^EMAIL_GROUP_(\d+)$', re.IGNORECASE)
+        for key in os.environ:
+            m = stock_re.match(key)
+            if m:
+                idx = int(m.group(1))
+                val = os.environ[key].strip()
+                groups.setdefault(idx, {})['stocks'] = [c.strip() for c in val.split(',') if c.strip()]
+            m = email_re.match(key)
+            if m:
+                idx = int(m.group(1))
+                val = os.environ[key].strip()
+                groups.setdefault(idx, {})['emails'] = [e.strip() for e in val.split(',') if e.strip()]
+        result = []
+        for idx in sorted(groups.keys()):
+            g = groups[idx]
+            if 'stocks' in g and 'emails' in g and g['stocks'] and g['emails']:
+                result.append((g['stocks'], g['emails']))
+        return result
+
     @classmethod
     def _resolve_realtime_source_priority(cls) -> str:
         """

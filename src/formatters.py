@@ -11,6 +11,137 @@ import re
 import time
 from typing import List, Callable
 
+import markdown2
+
+
+def markdown_to_html_document(markdown_text: str) -> str:
+    """
+    Convert Markdown to a complete HTML document (for email, md2img, etc.).
+
+    Uses markdown2 with table and code block support, wraps with inline CSS
+    for compact, readable layout. Reused by notification email and md2img.
+
+    Args:
+        markdown_text: Raw Markdown content.
+
+    Returns:
+        Full HTML document string with DOCTYPE, head, and body.
+    """
+    html_content = markdown2.markdown(
+        markdown_text,
+        extras=["tables", "fenced-code-blocks", "break-on-newline", "cuddled-lists"],
+    )
+
+    css_style = """
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+                line-height: 1.5;
+                color: #24292e;
+                font-size: 14px;
+                padding: 15px;
+                max-width: 900px;
+                margin: 0 auto;
+            }
+            h1 {
+                font-size: 20px;
+                border-bottom: 1px solid #eaecef;
+                padding-bottom: 0.3em;
+                margin-top: 1.2em;
+                margin-bottom: 0.8em;
+                color: #0366d6;
+            }
+            h2 {
+                font-size: 18px;
+                border-bottom: 1px solid #eaecef;
+                padding-bottom: 0.3em;
+                margin-top: 1.0em;
+                margin-bottom: 0.6em;
+            }
+            h3 {
+                font-size: 16px;
+                margin-top: 0.8em;
+                margin-bottom: 0.4em;
+            }
+            p {
+                margin-top: 0;
+                margin-bottom: 8px;
+            }
+            table {
+                border-collapse: collapse;
+                width: 100%;
+                margin: 12px 0;
+                display: block;
+                overflow-x: auto;
+                font-size: 13px;
+            }
+            th, td {
+                border: 1px solid #dfe2e5;
+                padding: 6px 10px;
+                text-align: left;
+            }
+            th {
+                background-color: #f6f8fa;
+                font-weight: 600;
+            }
+            tr:nth-child(2n) {
+                background-color: #f8f8f8;
+            }
+            tr:hover {
+                background-color: #f1f8ff;
+            }
+            blockquote {
+                color: #6a737d;
+                border-left: 0.25em solid #dfe2e5;
+                padding: 0 1em;
+                margin: 0 0 10px 0;
+            }
+            code {
+                padding: 0.2em 0.4em;
+                margin: 0;
+                font-size: 85%;
+                background-color: rgba(27,31,35,0.05);
+                border-radius: 3px;
+                font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+            }
+            pre {
+                padding: 12px;
+                overflow: auto;
+                line-height: 1.45;
+                background-color: #f6f8fa;
+                border-radius: 3px;
+                margin-bottom: 10px;
+            }
+            hr {
+                height: 0.25em;
+                padding: 0;
+                margin: 16px 0;
+                background-color: #e1e4e8;
+                border: 0;
+            }
+            ul, ol {
+                padding-left: 20px;
+                margin-bottom: 10px;
+            }
+            li {
+                margin: 2px 0;
+            }
+        """
+
+    return f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <style>
+                {css_style}
+            </style>
+        </head>
+        <body>
+            {html_content}
+        </body>
+        </html>
+        """
+
 
 def format_feishu_markdown(content: str) -> str:
     """
