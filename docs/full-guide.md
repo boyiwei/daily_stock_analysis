@@ -84,6 +84,7 @@ daily_stock_analysis/
 | `SERVERCHAN3_SENDKEY` | Server酱³ Sendkey（[获取地址](https://sc3.ft07.com/)，手机APP推送服务） | 可选 |
 | `CUSTOM_WEBHOOK_URLS` | 自定义 Webhook（支持钉钉等，多个用逗号分隔） | 可选 |
 | `CUSTOM_WEBHOOK_BEARER_TOKEN` | 自定义 Webhook 的 Bearer Token（用于需要认证的 Webhook） | 可选 |
+| `WEBHOOK_VERIFY_SSL` | Webhook HTTPS 证书校验（默认 true）。设为 false 可支持自签名证书。警告：关闭有严重安全风险（MITM），仅限可信内网 | 可选 |
 
 > *注：至少配置一个渠道，配置多个则同时推送
 
@@ -94,6 +95,8 @@ daily_stock_analysis/
 | `SINGLE_STOCK_NOTIFY` | 单股推送模式：设为 `true` 则每分析完一只股票立即推送 | 可选 |
 | `REPORT_TYPE` | 报告类型：`simple`(精简) 或 `full`(完整)，Docker环境推荐设为 `full` | 可选 |
 | `ANALYSIS_DELAY` | 个股分析和大盘分析之间的延迟（秒），避免API限流，如 `10` | 可选 |
+| `MARKDOWN_TO_IMAGE_CHANNELS` | 将 Markdown 转为图片发送的渠道（用逗号分隔）：telegram,wechat,custom,email，需安装 wkhtmltopdf | 可选 |
+| `MARKDOWN_TO_IMAGE_MAX_CHARS` | 超过此长度不转图片，避免超大图片（默认 15000） | 可选 |
 
 #### 其他配置
 
@@ -168,8 +171,10 @@ daily_stock_analysis/
 | `EMAIL_PASSWORD` | 邮箱授权码（非登录密码） | 可选 |
 | `EMAIL_RECEIVERS` | 收件人邮箱（逗号分隔，留空发给自己） | 可选 |
 | `EMAIL_SENDER_NAME` | 发件人显示名称 | 可选 |
+| `STOCK_GROUP_N` / `EMAIL_GROUP_N` | 股票分组发往不同邮箱（Issue #268），如 `STOCK_GROUP_1=600519,300750` 与 `EMAIL_GROUP_1=user1@example.com` 配对 | 可选 |
 | `CUSTOM_WEBHOOK_URLS` | 自定义 Webhook（逗号分隔） | 可选 |
 | `CUSTOM_WEBHOOK_BEARER_TOKEN` | 自定义 Webhook Bearer Token | 可选 |
+| `WEBHOOK_VERIFY_SSL` | Webhook HTTPS 证书校验（默认 true）。设为 false 可支持自签名。警告：关闭有严重安全风险 | 可选 |
 | `PUSHOVER_USER_KEY` | Pushover 用户 Key | 可选 |
 | `PUSHOVER_API_TOKEN` | Pushover API Token | 可选 |
 | `PUSHPLUS_TOKEN` | PushPlus Token（国内推送服务） | 可选 |
@@ -414,6 +419,16 @@ crontab -e
 - 163 邮箱：smtp.163.com:465
 - Gmail：smtp.gmail.com:587
 
+**股票分组发往不同邮箱**（Issue #268，可选）：
+配置 `STOCK_GROUP_N` 与 `EMAIL_GROUP_N` 可实现不同股票组的报告发送到不同邮箱，例如多人共享分析时互不干扰。大盘复盘会发往所有配置的邮箱。
+
+```bash
+STOCK_GROUP_1=600519,300750
+EMAIL_GROUP_1=user1@example.com
+STOCK_GROUP_2=002594,AAPL
+EMAIL_GROUP_2=user2@example.com
+```
+
 ### 自定义 Webhook
 
 支持任意 POST JSON 的 Webhook，包括：
@@ -471,6 +486,19 @@ PUSHOVER_API_TOKEN=your_api_token
 - 支持通知优先级和声音设置
 - 免费额度足够个人使用（每月 10,000 条）
 - 消息可保留 7 天
+
+### Markdown 转图片（可选）
+
+配置 `MARKDOWN_TO_IMAGE_CHANNELS` 可将报告以图片形式发送至不支持 Markdown 的渠道（telegram, wechat, custom, email）。
+
+**依赖安装**：
+
+1. **imgkit**：已包含在 `requirements.txt`，执行 `pip install -r requirements.txt` 时会自动安装
+2. **wkhtmltopdf**：系统级依赖，需手动安装：
+   - **macOS**：`brew install wkhtmltopdf`
+   - **Debian/Ubuntu**：`apt install wkhtmltopdf`
+
+未安装或安装失败时，将自动回退为 Markdown 文本发送。
 
 ---
 

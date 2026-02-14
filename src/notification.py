@@ -14,6 +14,7 @@ A股自选股智能分析系统 - 通知层
    - 邮件 SMTP
    - Pushover（手机/桌面推送）
 """
+import base64
 import hashlib
 import hmac
 import logging
@@ -21,11 +22,11 @@ import json
 import smtplib
 import re
 import time
-import markdown2
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+from email.mime.image import MIMEImage
 from email.header import Header
 from email.utils import formataddr
 from enum import Enum
@@ -39,10 +40,14 @@ except ImportError:
 
 from src.config import get_config
 from src.analyzer import AnalysisResult
-from src.formatters import format_feishu_markdown
+from src.formatters import format_feishu_markdown, markdown_to_html_document
 from bot.models import BotMessage
 
 logger = logging.getLogger(__name__)
+
+
+# WeChat Work image msgtype limit ~2MB (base64 payload)
+WECHAT_IMAGE_MAX_BYTES = 2 * 1024 * 1024
 
 
 class NotificationChannel(Enum):
@@ -160,7 +165,9 @@ class NotificationService:
             'password': config.email_password,
             'receivers': config.email_receivers or ([config.email_sender] if config.email_sender else []),
         }
-        
+        # Stock-to-email group routing (Issue #268)
+        self._stock_email_groups = getattr(config, 'stock_email_groups', None) or []
+
         # Pushover 配置
         self._pushover_config = {
             'user_key': getattr(config, 'pushover_user_key', None),
@@ -176,7 +183,8 @@ class NotificationService:
         # 自定义 Webhook 配置
         self._custom_webhook_urls = getattr(config, 'custom_webhook_urls', []) or []
         self._custom_webhook_bearer_token = getattr(config, 'custom_webhook_bearer_token', None)
-        
+        self._webhook_verify_ssl = getattr(config, 'webhook_verify_ssl', True)
+
         # Discord 配置
         self._discord_config = {
             'bot_token': getattr(config, 'discord_bot_token', None),
@@ -192,7 +200,15 @@ class NotificationService:
         # 消息长度限制（字节）
         self._feishu_max_bytes = getattr(config, 'feishu_max_bytes', 20000)
         self._wechat_max_bytes = getattr(config, 'wechat_max_bytes', 4000)
-        
+
+        # Markdown 转图片（Issue #289）
+        self._markdown_to_image_channels = set(
+            getattr(config, 'markdown_to_image_channels', []) or []
+        )
+        self._markdown_to_image_max_chars = getattr(
+            config, 'markdown_to_image_max_chars', 15000
+        )
+
         # 检测所有已配置的渠道
         self._available_channels = self._detect_all_channels()
         if self._has_context_channel():
@@ -274,6 +290,43 @@ class NotificationService:
     def _is_email_configured(self) -> bool:
         """检查邮件配置是否完整（只需邮箱和授权码）"""
         return bool(self._email_config['sender'] and self._email_config['password'])
+
+    def get_receivers_for_stocks(self, stock_codes: List[str]) -> List[str]:
+        """
+        Look up email receivers for given stock codes based on stock_email_groups.
+        Returns union of receivers for all matching groups; falls back to default if none match.
+        """
+        if not stock_codes or not self._stock_email_groups:
+            return self._email_config['receivers']
+        seen: set = set()
+        result: List[str] = []
+        for stocks, emails in self._stock_email_groups:
+            for code in stock_codes:
+                if code in stocks:
+                    for e in emails:
+                        if e not in seen:
+                            seen.add(e)
+                            result.append(e)
+                    break
+        return result if result else self._email_config['receivers']
+
+    def get_all_email_receivers(self) -> List[str]:
+        """
+        Return union of all configured email receivers (all groups + default).
+        Used for market review which should go to everyone.
+        """
+        seen: set = set()
+        result: List[str] = []
+        for _, emails in self._stock_email_groups:
+            for e in emails:
+                if e not in seen:
+                    seen.add(e)
+                    result.append(e)
+        for e in self._email_config['receivers']:
+            if e not in seen:
+                seen.add(e)
+                result.append(e)
+        return result
     
     def _is_pushover_configured(self) -> bool:
         """检查 Pushover 配置是否完整"""
@@ -1302,7 +1355,40 @@ class NotificationService:
         except Exception as e:
             logger.error(f"发送企业微信消息失败: {e}")
             return False
-    
+
+    def _send_wechat_image(self, image_bytes: bytes) -> bool:
+        """Send image via WeChat Work webhook msgtype image (Issue #289)."""
+        if not self._wechat_url:
+            return False
+        if len(image_bytes) > WECHAT_IMAGE_MAX_BYTES:
+            logger.warning(
+                "企业微信图片超限 (%d > %d bytes)，拒绝发送，调用方应 fallback 为文本",
+                len(image_bytes), WECHAT_IMAGE_MAX_BYTES,
+            )
+            return False
+        try:
+            b64 = base64.b64encode(image_bytes).decode("ascii")
+            md5_hash = hashlib.md5(image_bytes).hexdigest()
+            payload = {
+                "msgtype": "image",
+                "image": {"base64": b64, "md5": md5_hash},
+            }
+            response = requests.post(
+                self._wechat_url, json=payload, timeout=30, verify=self._webhook_verify_ssl
+            )
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("errcode") == 0:
+                    logger.info("企业微信图片发送成功")
+                    return True
+                logger.error("企业微信图片发送失败: %s", result.get("errmsg", ""))
+            else:
+                logger.error("企业微信请求失败: HTTP %s", response.status_code)
+            return False
+        except Exception as e:
+            logger.error("企业微信图片发送异常: %s", e)
+            return False
+
     def _send_wechat_chunked(self, content: str, max_bytes: int) -> bool:
         """
         分批发送长消息到企业微信
@@ -1509,7 +1595,8 @@ class NotificationService:
         response = requests.post(
             self._wechat_url,
             json=payload,
-            timeout=10
+            timeout=10,
+            verify=self._webhook_verify_ssl
         )
         
         if response.status_code == 200:
@@ -1723,7 +1810,8 @@ class NotificationService:
             response = requests.post(
                 self._feishu_url,
                 json=payload,
-                timeout=30
+                timeout=30,
+                verify=self._webhook_verify_ssl
             )
 
             logger.debug(f"飞书响应状态码: {response.status_code}")
@@ -1782,13 +1870,16 @@ class NotificationService:
 
         return _post_payload(text_payload)
 
-    def send_to_email(self, content: str, subject: Optional[str] = None) -> bool:
+    def send_to_email(
+        self, content: str, subject: Optional[str] = None, receivers: Optional[List[str]] = None
+    ) -> bool:
         """
         通过 SMTP 发送邮件（自动识别 SMTP 服务器）
         
         Args:
             content: 邮件内容（支持 Markdown，会转换为 HTML）
             subject: 邮件主题（可选，默认自动生成）
+            receivers: 收件人列表（可选，默认使用配置的 receivers）
             
         Returns:
             是否发送成功
@@ -1799,7 +1890,7 @@ class NotificationService:
         
         sender = self._email_config['sender']
         password = self._email_config['password']
-        receivers = self._email_config['receivers']
+        receivers = receivers or self._email_config['receivers']
         
         try:
             # 生成主题
@@ -1863,135 +1954,70 @@ class NotificationService:
         except Exception as e:
             logger.error(f"发送邮件失败: {e}")
             return False
-    
+
+    def _send_email_with_inline_image(
+        self, image_bytes: bytes, receivers: Optional[List[str]] = None
+    ) -> bool:
+        """Send email with inline image attachment (Issue #289)."""
+        if not self._is_email_configured():
+            return False
+        sender = self._email_config['sender']
+        password = self._email_config['password']
+        receivers = receivers or self._email_config['receivers']
+        try:
+            date_str = datetime.now().strftime('%Y-%m-%d')
+            subject = f"📈 股票智能分析报告 - {date_str}"
+            msg = MIMEMultipart('related')
+            msg['Subject'] = Header(subject, 'utf-8')
+            msg['From'] = formataddr(
+                (self._email_config.get('sender_name', '股票分析助手'), sender)
+            )
+            msg['To'] = ', '.join(receivers)
+
+            alt = MIMEMultipart('alternative')
+            alt.attach(MIMEText('报告已生成，详见下方图片。', 'plain', 'utf-8'))
+            html_body = (
+                '<p>报告已生成，详见下方图片（点击可查看大图）：</p>'
+                '<p><img src="cid:report-image" alt="股票分析报告" style="max-width:100%%;" /></p>'
+            )
+            alt.attach(MIMEText(html_body, 'html', 'utf-8'))
+            msg.attach(alt)
+
+            img_part = MIMEImage(image_bytes, _subtype='png')
+            img_part.add_header('Content-Disposition', 'inline', filename='report.png')
+            img_part.add_header('Content-ID', '<report-image>')
+            msg.attach(img_part)
+
+            domain = sender.split('@')[-1].lower()
+            smtp_config = SMTP_CONFIGS.get(domain)
+            if smtp_config:
+                smtp_server, smtp_port = smtp_config['server'], smtp_config['port']
+                use_ssl = smtp_config['ssl']
+            else:
+                smtp_server, smtp_port = f"smtp.{domain}", 465
+                use_ssl = True
+
+            if use_ssl:
+                server = smtplib.SMTP_SSL(smtp_server, smtp_port, timeout=30)
+            else:
+                server = smtplib.SMTP(smtp_server, smtp_port, timeout=30)
+                server.starttls()
+            server.login(sender, password)
+            server.send_message(msg)
+            server.quit()
+            logger.info("邮件（内联图片）发送成功，收件人: %s", receivers)
+            return True
+        except Exception as e:
+            logger.error("邮件（内联图片）发送失败: %s", e)
+            return False
+
     def _markdown_to_html(self, markdown_text: str) -> str:
         """
-        将 Markdown 转换为 HTML，支持表格并优化排版
+        Convert Markdown to HTML for email, with tables and compact layout.
 
-        使用 markdown2 库进行转换，并添加优化的 CSS 样式
-        解决问题：
-        1. 邮件表格未渲染问题
-        2. 邮件内容排版过于松散问题
+        Delegates to formatters.markdown_to_html_document for shared logic.
         """
-        # 使用 markdown2 转换，开启表格和其他扩展支持
-        html_content = markdown2.markdown(
-            markdown_text,
-            extras=["tables", "fenced-code-blocks", "break-on-newline", "cuddled-lists"]
-        )
-
-        # 优化 CSS 样式：更紧凑的排版，美观的表格
-        css_style = """
-            body {
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-                line-height: 1.5;
-                color: #24292e;
-                font-size: 14px;
-                padding: 15px;
-                max-width: 900px;
-                margin: 0 auto;
-            }
-            h1 {
-                font-size: 20px;
-                border-bottom: 1px solid #eaecef;
-                padding-bottom: 0.3em;
-                margin-top: 1.2em;
-                margin-bottom: 0.8em;
-                color: #0366d6;
-            }
-            h2 {
-                font-size: 18px;
-                border-bottom: 1px solid #eaecef;
-                padding-bottom: 0.3em;
-                margin-top: 1.0em;
-                margin-bottom: 0.6em;
-            }
-            h3 {
-                font-size: 16px;
-                margin-top: 0.8em;
-                margin-bottom: 0.4em;
-            }
-            p {
-                margin-top: 0;
-                margin-bottom: 8px;
-            }
-            /* 表格样式优化 */
-            table {
-                border-collapse: collapse;
-                width: 100%;
-                margin: 12px 0;
-                display: block;
-                overflow-x: auto;
-                font-size: 13px;
-            }
-            th, td {
-                border: 1px solid #dfe2e5;
-                padding: 6px 10px;
-                text-align: left;
-            }
-            th {
-                background-color: #f6f8fa;
-                font-weight: 600;
-            }
-            tr:nth-child(2n) {
-                background-color: #f8f8f8;
-            }
-            tr:hover {
-                background-color: #f1f8ff;
-            }
-            /* 引用块样式 */
-            blockquote {
-                color: #6a737d;
-                border-left: 0.25em solid #dfe2e5;
-                padding: 0 1em;
-                margin: 0 0 10px 0;
-            }
-            /* 代码块样式 */
-            code {
-                padding: 0.2em 0.4em;
-                margin: 0;
-                font-size: 85%;
-                background-color: rgba(27,31,35,0.05);
-                border-radius: 3px;
-                font-family: SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
-            }
-            pre {
-                padding: 12px;
-                overflow: auto;
-                line-height: 1.45;
-                background-color: #f6f8fa;
-                border-radius: 3px;
-                margin-bottom: 10px;
-            }
-            hr {
-                height: 0.25em;
-                padding: 0;
-                margin: 16px 0;
-                background-color: #e1e4e8;
-                border: 0;
-            }
-            ul, ol {
-                padding-left: 20px;
-                margin-bottom: 10px;
-            }
-            li {
-                margin: 2px 0;
-            }
-        """
-
-        return f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="utf-8">
-            <style>
-                {css_style}
-            </style>
-        </head>
-        <body>
-            {html_content}
-        </body>
-        </html>
-        """
+        return markdown_to_html_document(markdown_text)
     
     def send_to_telegram(self, content: str) -> bool:
         """
@@ -2155,7 +2181,30 @@ class NotificationService:
                 all_success = False
                 
         return all_success
-    
+
+    def _send_telegram_photo(self, image_bytes: bytes) -> bool:
+        """Send image via Telegram sendPhoto API (Issue #289)."""
+        if not self._is_telegram_configured():
+            return False
+        bot_token = self._telegram_config['bot_token']
+        chat_id = self._telegram_config['chat_id']
+        message_thread_id = self._telegram_config.get('message_thread_id')
+        api_url = f"https://api.telegram.org/bot{bot_token}/sendPhoto"
+        try:
+            data = {"chat_id": chat_id}
+            if message_thread_id:
+                data['message_thread_id'] = message_thread_id
+            files = {"photo": ("report.png", image_bytes, "image/png")}
+            response = requests.post(api_url, data=data, files=files, timeout=30)
+            if response.status_code == 200 and response.json().get('ok'):
+                logger.info("Telegram 图片发送成功")
+                return True
+            logger.error("Telegram 图片发送失败: %s", response.text[:200])
+            return False
+        except Exception as e:
+            logger.error("Telegram 图片发送异常: %s", e)
+            return False
+
     def _convert_to_telegram_markdown(self, text: str) -> str:
         """
         将标准 Markdown 转换为 Telegram 支持的格式
@@ -2451,6 +2500,59 @@ class NotificationService:
         url_lower = (url or "").lower()
         return 'dingtalk' in url_lower or 'oapi.dingtalk.com' in url_lower
 
+    @staticmethod
+    def _is_discord_webhook(url: str) -> bool:
+        url_lower = (url or "").lower()
+        return (
+            'discord.com/api/webhooks' in url_lower
+            or 'discordapp.com/api/webhooks' in url_lower
+        )
+
+    def _send_custom_webhook_image(
+        self, image_bytes: bytes, fallback_content: str = ""
+    ) -> bool:
+        """Send image to Custom Webhooks; Discord supports file attachment (Issue #289)."""
+        if not self._custom_webhook_urls:
+            return False
+        success_count = 0
+        for i, url in enumerate(self._custom_webhook_urls):
+            try:
+                if self._is_discord_webhook(url):
+                    files = {"file": ("report.png", image_bytes, "image/png")}
+                    data = {"content": "📈 股票智能分析报告"}
+                    headers = {"User-Agent": "StockAnalysis/1.0"}
+                    if self._custom_webhook_bearer_token:
+                        headers["Authorization"] = (
+                            f"Bearer {self._custom_webhook_bearer_token}"
+                        )
+                    response = requests.post(
+                        url, data=data, files=files, headers=headers, timeout=30,
+                        verify=self._webhook_verify_ssl
+                    )
+                    if response.status_code in (200, 204):
+                        logger.info("自定义 Webhook %d（Discord 图片）推送成功", i + 1)
+                        success_count += 1
+                    else:
+                        logger.error(
+                            "自定义 Webhook %d（Discord 图片）推送失败: HTTP %s",
+                            i + 1, response.status_code,
+                        )
+                else:
+                    if fallback_content:
+                        payload = self._build_custom_webhook_payload(url, fallback_content)
+                        if self._post_custom_webhook(url, payload, timeout=30):
+                            logger.info(
+                                "自定义 Webhook %d（图片不支持，回退文本）推送成功", i + 1
+                            )
+                            success_count += 1
+                    else:
+                        logger.warning(
+                            "自定义 Webhook %d 不支持图片，且无回退内容，跳过", i + 1
+                        )
+            except Exception as e:
+                logger.error("自定义 Webhook %d 图片推送异常: %s", i + 1, e)
+        return success_count > 0
+
     def _post_custom_webhook(self, url: str, payload: dict, timeout: int = 30) -> bool:
         headers = {
             'Content-Type': 'application/json; charset=utf-8',
@@ -2460,7 +2562,7 @@ class NotificationService:
         if self._custom_webhook_bearer_token:
             headers['Authorization'] = f'Bearer {self._custom_webhook_bearer_token}'
         body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-        response = requests.post(url, data=body, headers=headers, timeout=timeout)
+        response = requests.post(url, data=body, headers=headers, timeout=timeout, verify=self._webhook_verify_ssl)
         if response.status_code == 200:
             return True
         logger.error(f"自定义 Webhook 推送失败: HTTP {response.status_code}")
@@ -2970,7 +3072,8 @@ class NotificationService:
             response = requests.post(
                 self._discord_config['webhook_url'],
                 json=payload,
-                timeout=10
+                timeout=10,
+                verify=self._webhook_verify_ssl
             )
             
             if response.status_code in [200, 204]:
@@ -3047,11 +3150,15 @@ class NotificationService:
                     hashlib.sha256
                 ).hexdigest()
             url = self._astrbot_config['astrbot_url']
-            response = requests.post(url, json=payload, timeout=10,headers={
-                        "Content-Type": "application/json",
-                        "X-Signature": signature,
-                        "X-Timestamp": timestamp
-                    })
+            response = requests.post(
+                url, json=payload, timeout=10,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Signature": signature,
+                    "X-Timestamp": timestamp
+                },
+                verify=self._webhook_verify_ssl
+            )
 
             if response.status_code == 200:
                 logger.info("AstrBot 消息发送成功")
@@ -3062,16 +3169,49 @@ class NotificationService:
         except Exception as e:
             logger.error(f"AstrBot 发送异常: {e}")
             return False
-    
-    def send(self, content: str) -> bool:
+
+    def _should_use_image_for_channel(
+        self, channel: NotificationChannel, image_bytes: Optional[bytes]
+    ) -> bool:
+        """
+        Decide whether to send as image for the given channel (Issue #289).
+
+        Fallback rules (send as Markdown text instead of image):
+        - image_bytes is None: conversion failed / imgkit not installed / content over max_chars
+        - WeChat: image exceeds ~2MB limit
+        """
+        if channel.value not in self._markdown_to_image_channels or image_bytes is None:
+            return False
+        if channel == NotificationChannel.WECHAT and len(image_bytes) > WECHAT_IMAGE_MAX_BYTES:
+            logger.warning(
+                "企业微信图片超限 (%d bytes)，回退为 Markdown 文本发送",
+                len(image_bytes),
+            )
+            return False
+        return True
+
+    def send(
+        self,
+        content: str,
+        email_stock_codes: Optional[List[str]] = None,
+        email_send_to_all: bool = False
+    ) -> bool:
         """
         统一发送接口 - 向所有已配置的渠道发送
-        
+
         遍历所有已配置的渠道，逐一发送消息
-        
+
+        Fallback rules (Markdown-to-image, Issue #289):
+        - When image_bytes is None (conversion failed / imgkit not installed /
+          content over max_chars): all channels configured for image will send
+          as Markdown text instead.
+        - When WeChat image exceeds ~2MB: that channel falls back to Markdown text.
+
         Args:
             content: 消息内容（Markdown 格式）
-            
+            email_stock_codes: 股票代码列表（可选，用于邮件渠道路由到对应分组邮箱，Issue #268）
+            email_send_to_all: 邮件是否发往所有配置邮箱（用于大盘复盘等无股票归属的内容）
+
         Returns:
             是否至少有一个渠道发送成功
         """
@@ -3083,24 +3223,59 @@ class NotificationService:
                 return True
             logger.warning("通知服务不可用，跳过推送")
             return False
-        
+
+        # Markdown to image (Issue #289): convert once if any channel needs it.
+        # Per-channel decision via _should_use_image_for_channel (see send() docstring for fallback rules).
+        image_bytes = None
+        channels_needing_image = {
+            ch for ch in self._available_channels
+            if ch.value in self._markdown_to_image_channels
+        }
+        if channels_needing_image:
+            from src.md2img import markdown_to_image
+            image_bytes = markdown_to_image(
+                content, max_chars=self._markdown_to_image_max_chars
+            )
+            if image_bytes:
+                logger.info("Markdown 已转换为图片，将向 %s 发送图片",
+                            [ch.value for ch in channels_needing_image])
+            elif channels_needing_image:
+                logger.warning("Markdown 转图片失败，将回退为文本发送")
+
         channel_names = self.get_channel_names()
         logger.info(f"正在向 {len(self._available_channels)} 个渠道发送通知：{channel_names}")
-        
+
         success_count = 0
         fail_count = 0
-        
+
         for channel in self._available_channels:
             channel_name = ChannelDetector.get_channel_name(channel)
+            use_image = self._should_use_image_for_channel(channel, image_bytes)
             try:
                 if channel == NotificationChannel.WECHAT:
-                    result = self.send_to_wechat(content)
+                    if use_image:
+                        result = self._send_wechat_image(image_bytes)
+                    else:
+                        result = self.send_to_wechat(content)
                 elif channel == NotificationChannel.FEISHU:
                     result = self.send_to_feishu(content)
                 elif channel == NotificationChannel.TELEGRAM:
-                    result = self.send_to_telegram(content)
+                    if use_image:
+                        result = self._send_telegram_photo(image_bytes)
+                    else:
+                        result = self.send_to_telegram(content)
                 elif channel == NotificationChannel.EMAIL:
-                    result = self.send_to_email(content)
+                    receivers = None
+                    if email_send_to_all and self._stock_email_groups:
+                        receivers = self.get_all_email_receivers()
+                    elif email_stock_codes and self._stock_email_groups:
+                        receivers = self.get_receivers_for_stocks(email_stock_codes)
+                    if use_image:
+                        result = self._send_email_with_inline_image(
+                            image_bytes, receivers=receivers
+                        )
+                    else:
+                        result = self.send_to_email(content, receivers=receivers)
                 elif channel == NotificationChannel.PUSHOVER:
                     result = self.send_to_pushover(content)
                 elif channel == NotificationChannel.PUSHPLUS:
@@ -3108,7 +3283,12 @@ class NotificationService:
                 elif channel == NotificationChannel.SERVERCHAN3:
                     result = self.send_to_serverchan3(content)
                 elif channel == NotificationChannel.CUSTOM:
-                    result = self.send_to_custom(content)
+                    if use_image:
+                        result = self._send_custom_webhook_image(
+                            image_bytes, fallback_content=content
+                        )
+                    else:
+                        result = self.send_to_custom(content)
                 elif channel == NotificationChannel.DISCORD:
                     result = self.send_to_discord(content)
                 elif channel == NotificationChannel.ASTRBOT:
@@ -3116,16 +3296,16 @@ class NotificationService:
                 else:
                     logger.warning(f"不支持的通知渠道: {channel}")
                     result = False
-                
+
                 if result:
                     success_count += 1
                 else:
                     fail_count += 1
-                    
+
             except Exception as e:
                 logger.error(f"{channel_name} 发送失败: {e}")
                 fail_count += 1
-        
+
         logger.info(f"通知发送完成：成功 {success_count} 个，失败 {fail_count} 个")
         return success_count > 0 or context_success
     

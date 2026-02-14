@@ -83,6 +83,7 @@ Go to your forked repo → `Settings` → `Secrets and variables` → `Actions` 
 | `SERVERCHAN3_SENDKEY` | ServerChan v3 Sendkey ([Get here](https://sc3.ft07.com/), mobile app push service) | Optional |
 | `CUSTOM_WEBHOOK_URLS` | Custom Webhook (supports DingTalk, etc., comma-separated) | Optional |
 | `CUSTOM_WEBHOOK_BEARER_TOKEN` | Bearer Token for custom webhooks (for authenticated webhooks) | Optional |
+| `WEBHOOK_VERIFY_SSL` | Verify Webhook HTTPS certificates (default true). Set to false for self-signed certs. WARNING: Disabling has serious security risk (MITM), use only on trusted internal networks | Optional |
 
 > *Note: Configure at least one channel; multiple channels will all receive notifications
 
@@ -167,6 +168,7 @@ Default schedule: Every weekday at **18:00 (Beijing Time)** automatic execution.
 | `EMAIL_RECEIVERS` | Receiver emails (comma-separated, leave empty to send to self) | Optional |
 | `CUSTOM_WEBHOOK_URLS` | Custom Webhook (comma-separated) | Optional |
 | `CUSTOM_WEBHOOK_BEARER_TOKEN` | Custom Webhook Bearer Token | Optional |
+| `WEBHOOK_VERIFY_SSL` | Webhook HTTPS certificate verification (default true). Set to false for self-signed certs. WARNING: Disabling has serious security risk | Optional |
 | `PUSHOVER_USER_KEY` | Pushover User Key | Optional |
 | `PUSHOVER_API_TOKEN` | Pushover API Token | Optional |
 | `PUSHPLUS_TOKEN` | PushPlus Token (Chinese push service) | Optional |
