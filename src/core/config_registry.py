@@ -249,7 +249,7 @@ _FIELD_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "is_sensitive": False,
         "is_required": False,
         "is_editable": True,
-        "default_value": "claude-sonnet-4-20250514",
+        "default_value": "gemini-3-flash-preview",
         "options": [],
         "validation": {},
         "display_order": 80,
