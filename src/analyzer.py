@@ -509,46 +509,65 @@ class GeminiAnalyzer:
 
     def __init__(self, api_key: Optional[str] = None):
         """
-        初始化 AI 分析器
+        Initialize the AI analyzer.
 
-        优先级：Gemini > OpenAI 兼容 API > AI Sandbox
+        All configured providers are eagerly initialized at startup so they
+        are ready as fallbacks at runtime.  The ``_use_openai`` /
+        ``_use_sandbox`` flags indicate which provider is the *primary*;
+        the others still serve as fallbacks inside ``_call_api_with_retry``.
+
+        Priority: Gemini > OpenAI compatible API > Princeton AI Sandbox
 
         Args:
-            api_key: Gemini API Key（可选，默认从配置读取）
+            api_key: Gemini API Key (optional, read from config by default)
         """
         config = get_config()
         self._api_key = api_key or config.gemini_api_key
         self._model = None
-        self._current_model_name = None  # 当前使用的模型名称
-        self._using_fallback = False  # 是否正在使用备选模型
-        self._use_openai = False  # 是否使用 OpenAI 兼容 API
-        self._openai_client = None  # OpenAI 客户端
-        self._use_sandbox = False  # 是否使用  AI Sandbox
-        self._sandbox_client = None  # Portkey (AI Sandbox) 客户端
+        self._current_model_name = None
+        self._using_fallback = False
+        self._use_openai = False
+        self._openai_client = None
+        self._use_sandbox = False
+        self._sandbox_client = None
 
-        # 检查 Gemini API Key 是否有效（过滤占位符）
-        gemini_key_valid = self._api_key and not self._api_key.startswith('your_') and len(self._api_key) > 10
+        gemini_key_valid = (
+            self._api_key
+            and not self._api_key.startswith('your_')
+            and len(self._api_key) > 10
+        )
 
-        # 优先尝试初始化 Gemini
+        # --- Eagerly initialize every configured provider ---
         if gemini_key_valid:
             try:
                 self._init_model()
             except Exception as e:
-                logger.warning(f"Gemini 初始化失败: {e}，尝试 OpenAI 兼容 API")
-                self._init_openai_fallback()
+                logger.warning(f"Gemini 初始化失败: {e}")
+
+        # Always attempt OpenAI init so it is ready as a fallback
+        self._init_openai_fallback()
+
+        # Always attempt AI Sandbox init so it is ready as a fallback
+        self._init_sandbox_fallback()
+
+        # --- Determine the primary provider and set _current_model_name ---
+        if self._model:
+            # Gemini is primary; _current_model_name already set by _init_model
+            self._use_openai = False
+            self._use_sandbox = False
+        elif self._openai_client:
+            self._use_openai = True
+            self._use_sandbox = False
+            self._current_model_name = config.openai_model
+            logger.info("Gemini 不可用，使用 OpenAI 兼容 API 作为主模型")
+        elif self._sandbox_client:
+            self._use_sandbox = True
+            self._current_model_name = config.ai_sandbox_model
+            logger.info("Gemini/OpenAI 不可用，使用 Princeton AI Sandbox 作为主模型")
         else:
-            # Gemini Key 未配置，尝试 OpenAI
-            logger.info("Gemini API Key 未配置，尝试使用 OpenAI 兼容 API")
-            self._init_openai_fallback()
-
-        # If neither Gemini nor OpenAI is available, try AI Sandbox
-        if not self._model and not self._openai_client:
-            logger.info("Gemini/OpenAI 均不可用，尝试  AI Sandbox")
-            self._init_sandbox_fallback()
-
-        # None of the providers configured
-        if not self._model and not self._openai_client and not self._sandbox_client:
-            logger.warning("未配置任何 AI API Key (Gemini/OpenAI/AI Sandbox)，AI 分析功能将不可用")
+            logger.warning(
+                "未配置任何 AI API Key (Gemini/OpenAI/AI Sandbox)，AI 分析功能将不可用"
+            )
 
     def _init_openai_fallback(self) -> None:
         """
@@ -587,8 +606,6 @@ class GeminiAnalyzer:
                 client_kwargs["base_url"] = config.openai_base_url
 
             self._openai_client = OpenAI(**client_kwargs)
-            self._current_model_name = config.openai_model
-            self._use_openai = True
             logger.info(f"OpenAI 兼容 API 初始化成功 (base_url: {config.openai_base_url}, model: {config.openai_model})")
         except ImportError as e:
             # 依赖缺失（如 socksio）
@@ -631,10 +648,8 @@ class GeminiAnalyzer:
 
         try:
             self._sandbox_client = Portkey(api_key=config.ai_sandbox_key)
-            self._current_model_name = config.ai_sandbox_model
-            self._use_sandbox = True
             logger.info(
-                f" AI Sandbox 初始化成功 (model: {config.ai_sandbox_model})"
+                f"Princeton AI Sandbox 初始化成功 (model: {config.ai_sandbox_model})"
             )
         except Exception as e:
             logger.error(f" AI Sandbox 初始化失败: {e}")
@@ -731,7 +746,7 @@ class GeminiAnalyzer:
 
         def _build_base_request_kwargs() -> dict:
             kwargs = {
-                "model": self._current_model_name,
+                "model": config.openai_model,
                 "messages": [
                     {"role": "system", "content": self.SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
@@ -748,7 +763,7 @@ class GeminiAnalyzer:
             self._token_param_mode = {}
 
         max_output_tokens = generation_config.get('max_output_tokens', 8192)
-        model_name = self._current_model_name
+        model_name = config.openai_model
         mode = self._token_param_mode.get(model_name, "max_tokens")
 
         def _kwargs_with_mode(mode_value):
@@ -826,7 +841,7 @@ class GeminiAnalyzer:
                     time.sleep(delay)
 
                 kwargs = {
-                    "model": self._current_model_name,
+                    "model": config.ai_sandbox_model,
                     "messages": [
                         {"role": "system", "content": self.SYSTEM_PROMPT},
                         {"role": "user", "content": prompt},
