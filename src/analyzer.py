@@ -516,7 +516,7 @@ class GeminiAnalyzer:
         ``_use_sandbox`` flags indicate which provider is the *primary*;
         the others still serve as fallbacks inside ``_call_api_with_retry``.
 
-        Priority: Gemini > OpenAI compatible API > Princeton AI Sandbox
+        Priority: Princeton AI Sandbox > Gemini > OpenAI compatible API
 
         Args:
             api_key: Gemini API Key (optional, read from config by default)
@@ -538,6 +538,9 @@ class GeminiAnalyzer:
         )
 
         # --- Eagerly initialize every configured provider ---
+        # Always attempt AI Sandbox init first (highest priority)
+        self._init_sandbox_fallback()
+
         if gemini_key_valid:
             try:
                 self._init_model()
@@ -547,26 +550,25 @@ class GeminiAnalyzer:
         # Always attempt OpenAI init so it is ready as a fallback
         self._init_openai_fallback()
 
-        # Always attempt AI Sandbox init so it is ready as a fallback
-        self._init_sandbox_fallback()
-
         # --- Determine the primary provider and set _current_model_name ---
-        if self._model:
+        if self._sandbox_client:
+            self._use_sandbox = True
+            self._use_openai = False
+            self._current_model_name = config.ai_sandbox_model
+            logger.info("使用 Princeton AI Sandbox 作为主模型")
+        elif self._model:
             # Gemini is primary; _current_model_name already set by _init_model
             self._use_openai = False
             self._use_sandbox = False
+            logger.info("AI Sandbox 不可用，使用 Gemini 作为主模型")
         elif self._openai_client:
             self._use_openai = True
             self._use_sandbox = False
             self._current_model_name = config.openai_model
-            logger.info("Gemini 不可用，使用 OpenAI 兼容 API 作为主模型")
-        elif self._sandbox_client:
-            self._use_sandbox = True
-            self._current_model_name = config.ai_sandbox_model
-            logger.info("Gemini/OpenAI 不可用，使用 Princeton AI Sandbox 作为主模型")
+            logger.info("AI Sandbox/Gemini 不可用，使用 OpenAI 兼容 API 作为主模型")
         else:
             logger.warning(
-                "未配置任何 AI API Key (Gemini/OpenAI/AI Sandbox)，AI 分析功能将不可用"
+                "未配置任何 AI API Key (AI Sandbox/Gemini/OpenAI)，AI 分析功能将不可用"
             )
 
     def _init_openai_fallback(self) -> None:
@@ -878,67 +880,92 @@ class GeminiAnalyzer:
     def _call_api_with_retry(self, prompt: str, generation_config: dict) -> str:
         """
         调用 AI API，带有重试和模型切换机制
-        
-        优先级：Gemini > Gemini 备选模型 > OpenAI 兼容 API > AI Sandbox
-        
+
+        优先级：AI Sandbox > Gemini > Gemini 备选模型 > OpenAI 兼容 API
+
         处理 429 限流错误：
         1. 先指数退避重试
         2. 多次失败后切换到备选模型
-        3. Gemini 完全失败后尝试 OpenAI
-        
+        3. 所有模型失败后依次尝试下一个 provider
+
         Args:
             prompt: 提示词
             generation_config: 生成配置
-            
+
         Returns:
             响应文本
         """
         # If already using AI Sandbox mode, call Sandbox directly
         if self._use_sandbox:
-            return self._call_sandbox_api(prompt, generation_config)
+            try:
+                return self._call_sandbox_api(prompt, generation_config)
+            except Exception as sandbox_error:
+                logger.warning(f"[AI Sandbox] 主模型调用失败: {sandbox_error}")
+                # Fall through to try Gemini / OpenAI as fallbacks
+                last_error = sandbox_error
+
+                if self._model:
+                    logger.warning("[Fallback] AI Sandbox 失败，尝试 Gemini")
+                    try:
+                        return self._call_gemini_with_retry(prompt, generation_config)
+                    except Exception as gemini_error:
+                        logger.error(f"[Gemini] 备选 API 也失败: {gemini_error}")
+                        last_error = gemini_error
+
+                if self._openai_client:
+                    logger.warning("[Fallback] 尝试 OpenAI 兼容 API")
+                    try:
+                        return self._call_openai_api(prompt, generation_config)
+                    except Exception as openai_error:
+                        logger.error(f"[OpenAI] 备选 API 也失败: {openai_error}")
+                        last_error = openai_error
+
+                raise last_error
 
         # 如果已经在使用 OpenAI 模式，直接调用 OpenAI
         if self._use_openai:
             return self._call_openai_api(prompt, generation_config)
-        
+
+        # Gemini is the primary provider — run Gemini retry loop then fall back
+        return self._call_gemini_with_retry(prompt, generation_config)
+
+    def _call_gemini_with_retry(self, prompt: str, generation_config: dict) -> str:
+        """Gemini retry loop with fallback model switching, then OpenAI fallback."""
         config = get_config()
         max_retries = config.gemini_max_retries
         base_delay = config.gemini_retry_delay
-        
+
         last_error = None
         tried_fallback = getattr(self, '_using_fallback', False)
-        
+
         for attempt in range(max_retries):
             try:
-                # 请求前增加延时（防止请求过快触发限流）
                 if attempt > 0:
-                    delay = base_delay * (2 ** (attempt - 1))  # 指数退避: 5, 10, 20, 40...
-                    delay = min(delay, 60)  # 最大60秒
+                    delay = base_delay * (2 ** (attempt - 1))
+                    delay = min(delay, 60)
                     logger.info(f"[Gemini] 第 {attempt + 1} 次重试，等待 {delay:.1f} 秒...")
                     time.sleep(delay)
-                
+
                 response = self._model.generate_content(
                     prompt,
                     generation_config=generation_config,
                     request_options={"timeout": 120}
                 )
-                
+
                 if response and response.text:
                     return response.text
                 else:
                     raise ValueError("Gemini 返回空响应")
-                    
+
             except Exception as e:
                 last_error = e
                 error_str = str(e)
-                
-                # 检查是否是 429 限流错误
+
                 is_rate_limit = '429' in error_str or 'quota' in error_str.lower() or 'rate' in error_str.lower()
-                
+
                 if is_rate_limit:
                     logger.warning(f"[Gemini] API 限流 (429)，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
-                    
-                    # 如果已经重试了一半次数且还没切换过备选模型，尝试切换
+
                     if attempt >= max_retries // 2 and not tried_fallback:
                         if self._switch_to_fallback_model():
                             tried_fallback = True
@@ -946,9 +973,8 @@ class GeminiAnalyzer:
                         else:
                             logger.warning("[Gemini] 切换备选模型失败，继续使用当前模型重试")
                 else:
-                    # 非限流错误，记录并继续重试
                     logger.warning(f"[Gemini] API 调用失败，第 {attempt + 1}/{max_retries} 次尝试: {error_str[:100]}")
-        
+
         # Gemini 所有重试都失败，尝试 OpenAI 兼容 API
         if self._openai_client:
             logger.warning("[Gemini] 所有重试失败，切换到 OpenAI 兼容 API")
@@ -956,10 +982,8 @@ class GeminiAnalyzer:
                 return self._call_openai_api(prompt, generation_config)
             except Exception as openai_error:
                 logger.error(f"[OpenAI] 备选 API 也失败: {openai_error}")
-                # Fall through to try AI Sandbox below
                 last_error = openai_error
         elif config.openai_api_key and config.openai_base_url:
-            # 尝试懒加载初始化 OpenAI
             logger.warning("[Gemini] 所有重试失败，尝试初始化 OpenAI 兼容 API")
             self._init_openai_fallback()
             if self._openai_client:
@@ -969,27 +993,7 @@ class GeminiAnalyzer:
                     logger.error(f"[OpenAI] 备选 API 也失败: {openai_error}")
                     last_error = openai_error
 
-        # Try  AI Sandbox as final fallback
-        if self._sandbox_client:
-            logger.warning("[Fallback] 尝试  AI Sandbox")
-            try:
-                return self._call_sandbox_api(prompt, generation_config)
-            except Exception as sandbox_error:
-                logger.error(f"[AI Sandbox] 备选 API 也失败: {sandbox_error}")
-                raise last_error or sandbox_error
-        elif config.ai_sandbox_key:
-            # Lazy-initialize AI Sandbox
-            logger.warning("[Fallback] 尝试初始化  AI Sandbox")
-            self._init_sandbox_fallback()
-            if self._sandbox_client:
-                try:
-                    return self._call_sandbox_api(prompt, generation_config)
-                except Exception as sandbox_error:
-                    logger.error(f"[AI Sandbox] 备选 API 也失败: {sandbox_error}")
-                    raise last_error or sandbox_error
-
-        # 所有方式都失败
-        raise last_error or Exception("所有 AI API 调用失败 (Gemini/OpenAI/AI Sandbox)，已达最大重试次数")
+        raise last_error or Exception("所有 AI API 调用失败 (AI Sandbox/Gemini/OpenAI)，已达最大重试次数")
     
     def analyze(
         self, 
