@@ -56,11 +56,16 @@ jobs:
           # ==========================================
           # AI 配置
           # ==========================================
-          # Gemini AI（主选）
+          # Gemini AI（备选）
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || secrets.GEMINI_MODEL || 'gemini-3-flash-preview' }}
           GEMINI_MODEL_FALLBACK: ${{ vars.GEMINI_MODEL_FALLBACK || secrets.GEMINI_MODEL_FALLBACK || 'gemini-2.5-flash' }}
           GEMINI_REQUEST_DELAY: '3.0'
+          
+          # Princeton AI Sandbox（主选）
+          AI_SANDBOX_KEY: ${{ secrets.AI_SANDBOX_KEY }}
+          AI_SANDBOX_MODEL: ${{ vars.AI_SANDBOX_MODEL || secrets.AI_SANDBOX_MODEL || 'gemini-3-flash-preview' }}
+          AI_SANDBOX_TEMPERATURE: ${{ vars.AI_SANDBOX_TEMPERATURE || secrets.AI_SANDBOX_TEMPERATURE || '0.7' }}
           
           # OpenAI 兼容 API（备选）
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -170,7 +175,8 @@ jobs:
           echo "📋 配置检查"
           echo "=========================================="
           echo "【AI 配置】"
-          echo "  Gemini API Key: $([ -n "$GEMINI_API_KEY" ] && echo '✅ 已配置' || echo '❌ 未配置')"
+          echo "  AI Sandbox Key: $([ -n "$AI_SANDBOX_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
+          echo "  Gemini API Key: $([ -n "$GEMINI_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo "  OpenAI API Key: $([ -n "$OPENAI_API_KEY" ] && echo '✅ 已配置' || echo '⚪ 未配置')"
           echo ""
           echo "【搜索引擎】"
